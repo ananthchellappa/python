@@ -1,4 +1,4 @@
-# usage : python3 in_csv.csv col_index_to_delete  newfile_name
+# usage : python3 in_csv.csv col_index_to_delete  
 # will generate in_csv_swapped.csv in which col1,2 exchange places
 # note that first col is 0 -- just like list index!!
 
