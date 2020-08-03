@@ -1,0 +1,20 @@
+# in your .bashrc 
+# export PYTHONSTARTUP=$HOME/.pythonrc
+
+# >>> history() # show last 10 commands
+# >>> history(5) # show last 5 commands
+# >>> history(0) # show ALL commands
+# >>> history( 10, False ) # don't print leading command serial number
+
+def history( ncmds=10, show_num=True ):
+	import readline
+	total = readline.get_current_history_length()
+	if 0 == ncmds :
+		start = 1
+	else :
+		start = total-ncmds
+	for i in range(start, total):
+		if show_num :
+			print("%3d %s" % (i, readline.get_history_item(i)))
+		else :
+			print("%s" % ( readline.get_history_item(i)))
