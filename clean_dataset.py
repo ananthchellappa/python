@@ -8,7 +8,7 @@ def get_numeric_outliers( series ) :
     uniques = series.unique().tolist()
     uniques.sort()
     done = False
-    outliers = []
+    outliers = {}
 
     # process from bottom up
     while (not done and uniques) :
@@ -18,25 +18,25 @@ def get_numeric_outliers( series ) :
         abs_dists = np.asarray( [abs(x-raw_avg) for x in subset ] )
         # really need to DRY these into a separate function :(
         if abs(suspect - raw_avg) > abs_dists.mean() + 3 * abs_dists.std() :
-            outliers.append( suspect )
+            outliers[suspect] = "Lower abs dist 3 sigma from mean-clean-avg-dist"
         else :
             done = True   
 
     done = False
-    # process from top down
+    # process from top down (this are the largest elements)
     while ( not done and uniques) :
         suspect = uniques[-1]
         uniques = uniques[:-1]
         subset = list( filter( (suspect).__ne__, elems) )  # all but this one
         abs_dists = np.asarray( [abs(x-raw_avg) for x in subset ] )
         if suspect - raw_avg > abs_dists.mean() + 3 * abs_dists.std() :
-            outliers.append( suspect )
+            outliers[suspect] = "Upper abs dist 3 sigma from mean-clean-avg-dist"
         else :
             done = True
 
      
     if len( outliers ) > 0 :
-        return { outlier : "Lower abs dist 3 sigma from mean-clean-avg-dist" for outlier in outliers }
+        return outliers
     else :
         return None
 
