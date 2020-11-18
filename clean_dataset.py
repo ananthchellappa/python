@@ -71,7 +71,45 @@ def is_numeric_if_cleaned( series ) :
             pass
     return False
 
+def get_string_outliers( series ) :
+    """ pd.Series --> dict of outlier values (keys) and reasons (values)"""
+    vcs = series.value_counts()
+    mu = np.mean( vcs )
+    std = np.std( vcs )
+    outliers = {}
+    done = False
+    start = -1
+    while not done :
+        if vcs[start] < mu - 3 * std :
+            outliers[ vcs.index[start] ] = "Suspiciously low count"
+        else :
+            done = True
+        start -= 1
+    # now look at lengths
+    done = False
+    lengths = series.apply( len )
+    words = series.unique()
+    w_ls = pd.Series(words).apply( len )
+    s_df = pd.DataFrame( {'words' : words, 'lengths' : w_ls} )
+    vcs = lengths.value_counts()
+    mu = np.mean( lengths )
+    std = np.std( lengths )
+    start = -1
+    while not done :
+        if vcs.index[start] < mu - 3 * std :     # since we care about the actual length, not the count..
+            for candidate in s_df.loc[ s_df['lengths'] == vcs.index[start] , 'words'] :
+                if candidate in outliers.keys() :
+                    outliers[ candidate ] += ", Suspiciously low string length"
+                else :
+                    outliers[ candidate ] = "Suspiciously low string length"
+        else :
+            done = True
+        start -= 1
 
+    if len( outliers ) > 0 :
+        return outliers
+    else :
+        return None
 
 
 # given a dataframe, report the outliers in each column
@@ -81,9 +119,23 @@ def clean_dataset( df_in , update=False ) :
     df = df_in.copy()   # later we can optimize
     df.replace( '?', np.NaN, inplace=True )
     for col in df.columns :
+        if df[col].isna( ).value_counts( normalize=True )[False] < 0.95 :    # more then 5%
+            print( "Dropping Column : {}".format( col ) )
+            df.drop( axis='columns', columns=[col] , inplace=True)
+            continue
+        else : # drop only the rows
+            print( "Dropping rows from {}".format( col ) )
+            df.dropna( axis='index', subset=[col], inplace=True )
         if pd.api.types.is_numeric_dtype( df[col].dtypes ) :    # is numeric already
             outs = get_numeric_outliers( df[col] )
         else :
             if is_numeric_if_cleaned( df[col] ) :
-                df.str.replace( )
+                df[col] = df[col].str.replace('[? $,]', '' )    # replace
+                # recast (try/except)
+                try :
+                    df[col] = df[col].astype( 'float' )
+                    outs = get_numeric_outliers( df[col] )
+                except ValueError as e :
+                    print( "With {}, still an issue with {}".format( col, e) )  # test : have '!' as an entry
+            else : # dealing with strings now
                 pass
