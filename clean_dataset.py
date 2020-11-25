@@ -111,6 +111,38 @@ def get_string_outliers( series ) :
     else :
         return None
 
+def find_numeric_columns( df_in ) :
+    """ DataFrame --> list of strings (col names) and printed report"""
+    # operates on the columns which are not already recognized as numeric
+    # based on analysis, which columns should be considered numeric because
+    # the majority of entries are numbers? (If diversity of non-numeric values too high (> 20%),
+    # report as non-numeric )
+    df = df_in.copy()
+    numerics = {}
+    non_numerics = {}
+    candidates = df.select_dtypes( include='object').columns
+    for cand in candidates :
+        df[cand] = df[cand].str.replace('[$, ]', '') #  hitting space, $ and comma only
+        non_num = df.loc[ ~df[cand].str.match( pat='[+-]?(\d+|\d*\.\d+|\d+\.\d*)([eE][-+]?[0-9]+)?'), cand]
+        l_nn = len( non_num )
+        ls_nn = len( set(non_num ) )
+        if l_nn < 0.5 * df.shape[0] : # enough numeric items to classify this column
+            if ls_nn < 3 or ls_nn < 0.2 * l_nn : # diversity low enough
+                numerics[cand] = set(non_num)
+            else :
+                non_numerics[cand] = set(non_num)
+    print("Cleaning done by removing $,space,comma prior to inspection and..\n")
+    if len( numerics ) > 0 :
+        print( "These columns should be considered numeric and subjected to cleaning :")
+        print( " Name  : Entries to address")
+        for col in numerics.keys() :
+            print( "{} : {}".format( col, ','.join(numerics[col])))
+    if len( non_numerics ) > 0 :
+        print( "\nThese columns have too many unique non-numeric items and deserve a closer look :")
+        for col in non_numerics.keys() :
+            print( "{} : {}".format( col, ','.join(non_numerics[col])))
+    return list(numerics.keys())
+
 
 # given a dataframe, report the outliers in each column
 # default is preview mode. User has to set update=True

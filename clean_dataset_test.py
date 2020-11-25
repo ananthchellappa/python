@@ -48,7 +48,7 @@ class Test_numeric_if_cleaned( unittest.TestCase ) :
         self.assertEqual( is_numeric_if_cleaned( testcase), expectd )
 
 
-class test_get_string_outliers( unittest.TestCase ) :
+class Test_get_string_outliers( unittest.TestCase ) :
 
     def setUp( self ) :
         # https://archive.ics.uci.edu/ml/machine-learning-databases/autos/imports-85.data
@@ -61,6 +61,28 @@ class test_get_string_outliers( unittest.TestCase ) :
         testcase = self.tc_short
         expected = { "?" : "Suspiciously low string length"}
         self.assertEqual( get_string_outliers(testcase), expected )
+
+class Test_find_numeric_columns( unittest.TestCase ) :
+
+    def setUp( self ) :
+        # https://archive.ics.uci.edu/ml/machine-learning-databases/autos/imports-85.data
+        headers=["symboling","normalized-losses","make","fuel-type","aspiration","num-of-doors","body-style","drive-wheels","engine-location","wheel-base","length","width","height","curb-weight","engine-type","num-of-cylinders","engine-size","fuel-system","bore","stroke","compression-ratio","horsepower","peak-rpm","city-mpg","highway-mpg","price"]
+        df = pd.read_csv( "DATA/imports-85.data", names=headers)
+        self.df1 = df
+        self.df2 = pd.read_csv( "DATA/WNBA Stats.csv")
+
+    def test_wnba_experience( self ) :
+        testcase = self.df2
+        expected = ['Experience']
+        self.assertEqual( find_numeric_columns(testcase), expected )
+        print("WNBA case done")
+
+    def test_cars( self ) :
+        testcase = self.df1
+        result = find_numeric_columns( testcase )
+        print( result )
+
+    
 
 pdb.set_trace()
 unittest.main()
