@@ -150,9 +150,16 @@ def get_ID_col( df_in ) :
     # that is, a truly numeric column with many unique values is read in as string (object) because
     # of a few non-numeric values
     df = df_in.copy()
+    name_col = None
     nn_count = 0
     for col in df.select_dtypes( include='object').columns :
-        pass
+        df[col] = df[col].str.replace('[$, ]', '')
+        non_num = df.loc[ ~df[col].str.match( pat='^[+-]?(\d+|\d*\.\d+|\d+\.\d*)([eE][-+]?[0-9]+)?$'), col].unique()
+        if len( non_num ) > nn_count :
+            nn_count = len( non_num )
+            name_col = col
+    return name_col
+
 
 
 # given a dataframe, report the outliers in each column

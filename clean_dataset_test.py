@@ -88,11 +88,18 @@ class Test_get_ID_col( unittest.TestCase ) :
     def setUp( self ) :
         # https://www.kaggle.com/jinxbe/wnba-player-stats-2017
         self.df = pd.read_csv( "DATA/WNBA Stats.csv")
+        headers=["symboling","normalized-losses","make","fuel-type","aspiration","num-of-doors","body-style","drive-wheels","engine-location","wheel-base","length","width","height","curb-weight","engine-type","num-of-cylinders","engine-size","fuel-system","bore","stroke","compression-ratio","horsepower","peak-rpm","city-mpg","highway-mpg","price"]
+        self.df1 = pd.read_csv( "DATA/imports-85.data", names=headers)
 
     def test_wnba_name( self ) :
         testcase = self.df
         expected = 'Name'
         self.assertEqual( get_ID_col(testcase), expected )
+
+    def test_cars( self ) :
+        testcase = self.df1
+        expected = 'make'
+        self.assertEqual( get_ID_col(testcase), expected )        
 
 pdb.set_trace()
 unittest.main()
