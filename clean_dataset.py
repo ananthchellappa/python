@@ -143,6 +143,25 @@ def find_numeric_columns( df_in ) :
             print( "{} : {}".format( col, ','.join(non_numerics[col])))
     return list(numerics.keys())
 
+def clean_numeric_col( series ) :
+    """pd.Series --> pd.Series"""
+    if pd.api.types.is_numeric_dtype( series ) :
+        return series
+    ser = series.str.replace('[$, ]', '')
+    temp = ser.copy()
+    temp[ ~temp.str.match( pat='^[+-]?(\d+|\d*\.\d+|\d+\.\d*)([eE][-+]?[0-9]+)?$')] = np.NaN
+    temp = temp.astype('float')
+    non_num = ser[ ~ser.str.match( pat='^[+-]?(\d+|\d*\.\d+|\d+\.\d*)([eE][-+]?[0-9]+)?$')].unique()
+    if len( non_num ) == 1 and temp.min() > 0 and re.match( '^\w+$', non_num[0] ) :
+        ser = ser.str.replace( non_num[0], '0' )    # replace the singleton if other values are > 0
+                                            # and uses only word characters (not specials like ?)
+        ser = ser.astype('float')
+    else :
+        ser = temp  # since this already has the non-numeric replaced with NaN
+    return ser
+
+
+
 def get_ID_col( df_in ) :
     """ DataFrame --> string"""
     # return name of the non-numeric column with the highest diversity

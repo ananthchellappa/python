@@ -88,6 +88,7 @@ class Test_get_ID_col( unittest.TestCase ) :
     def setUp( self ) :
         # https://www.kaggle.com/jinxbe/wnba-player-stats-2017
         self.df = pd.read_csv( "DATA/WNBA Stats.csv")
+        # https://archive.ics.uci.edu/ml/machine-learning-databases/autos/imports-85.data
         headers=["symboling","normalized-losses","make","fuel-type","aspiration","num-of-doors","body-style","drive-wheels","engine-location","wheel-base","length","width","height","curb-weight","engine-type","num-of-cylinders","engine-size","fuel-system","bore","stroke","compression-ratio","horsepower","peak-rpm","city-mpg","highway-mpg","price"]
         self.df1 = pd.read_csv( "DATA/imports-85.data", names=headers)
 
@@ -100,6 +101,25 @@ class Test_get_ID_col( unittest.TestCase ) :
         testcase = self.df1
         expected = 'make'
         self.assertEqual( get_ID_col(testcase), expected )        
+
+class Test_clean_num_col ( unittest.TestCase ) :
+
+    def setUp( self ) :
+        # https://www.kaggle.com/jinxbe/wnba-player-stats-2017
+        self.df = pd.read_csv( "DATA/WNBA Stats.csv")
+        # https://archive.ics.uci.edu/ml/machine-learning-databases/autos/imports-85.data
+        headers=["symboling","normalized-losses","make","fuel-type","aspiration","num-of-doors","body-style","drive-wheels","engine-location","wheel-base","length","width","height","curb-weight","engine-type","num-of-cylinders","engine-size","fuel-system","bore","stroke","compression-ratio","horsepower","peak-rpm","city-mpg","highway-mpg","price"]
+        self.df1 = pd.read_csv( "DATA/imports-85.data", names=headers)
+
+    def test_cars( self ) :
+        testcase = self.df1['normalized-losses']
+        expected = 41   # number of NaN in the series
+        self.assertEqual( clean_numeric_col(testcase).isna().sum(), expected )
+    
+    def test_wnba_experience( self ) :
+        testcase = self.df['Experience']
+        expected = 0
+        self.assertEqual( clean_numeric_col(testcase).isna().sum(), expected )
 
 pdb.set_trace()
 unittest.main()
