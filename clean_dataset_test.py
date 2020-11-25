@@ -69,20 +69,30 @@ class Test_find_numeric_columns( unittest.TestCase ) :
         headers=["symboling","normalized-losses","make","fuel-type","aspiration","num-of-doors","body-style","drive-wheels","engine-location","wheel-base","length","width","height","curb-weight","engine-type","num-of-cylinders","engine-size","fuel-system","bore","stroke","compression-ratio","horsepower","peak-rpm","city-mpg","highway-mpg","price"]
         df = pd.read_csv( "DATA/imports-85.data", names=headers)
         self.df1 = df
+        # https://www.kaggle.com/jinxbe/wnba-player-stats-2017
         self.df2 = pd.read_csv( "DATA/WNBA Stats.csv")
 
     def test_wnba_experience( self ) :
         testcase = self.df2
         expected = ['Experience']
         self.assertEqual( find_numeric_columns(testcase), expected )
-        print("WNBA case done")
 
     def test_cars( self ) :
         testcase = self.df1
-        result = find_numeric_columns( testcase )
-        print( result )
+        expected = ['normalized-losses', 'bore', 'stroke', 'horsepower', 'peak-rpm', 'price']
+        self.assertEqual( find_numeric_columns(testcase), expected )
 
     
+class Test_get_ID_col( unittest.TestCase ) :
+
+    def setUp( self ) :
+        # https://www.kaggle.com/jinxbe/wnba-player-stats-2017
+        self.df = pd.read_csv( "DATA/WNBA Stats.csv")
+
+    def test_wnba_name( self ) :
+        testcase = self.df
+        expected = 'Name'
+        self.assertEqual( get_ID_col(testcase), expected )
 
 pdb.set_trace()
 unittest.main()

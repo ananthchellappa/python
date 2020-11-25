@@ -123,7 +123,7 @@ def find_numeric_columns( df_in ) :
     candidates = df.select_dtypes( include='object').columns
     for cand in candidates :
         df[cand] = df[cand].str.replace('[$, ]', '') #  hitting space, $ and comma only
-        non_num = df.loc[ ~df[cand].str.match( pat='[+-]?(\d+|\d*\.\d+|\d+\.\d*)([eE][-+]?[0-9]+)?'), cand]
+        non_num = df.loc[ ~df[cand].str.match( pat='^[+-]?(\d+|\d*\.\d+|\d+\.\d*)([eE][-+]?[0-9]+)?$'), cand]
         l_nn = len( non_num )
         ls_nn = len( set(non_num ) )
         if l_nn < 0.5 * df.shape[0] : # enough numeric items to classify this column
@@ -142,6 +142,17 @@ def find_numeric_columns( df_in ) :
         for col in non_numerics.keys() :
             print( "{} : {}".format( col, ','.join(non_numerics[col])))
     return list(numerics.keys())
+
+def get_ID_col( df_in ) :
+    """ DataFrame --> string"""
+    # return name of the non-numeric column with the highest diversity
+    # we do crude checking to see if the column is actually numeric to handle unclean data
+    # that is, a truly numeric column with many unique values is read in as string (object) because
+    # of a few non-numeric values
+    df = df_in.copy()
+    nn_count = 0
+    for col in df.select_dtypes( include='object').columns :
+        pass
 
 
 # given a dataframe, report the outliers in each column
