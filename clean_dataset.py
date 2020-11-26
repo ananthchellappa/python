@@ -160,6 +160,18 @@ def clean_numeric_col( series ) :
         ser = temp  # since this already has the non-numeric replaced with NaN
     return ser
 
+def rank_in_col( df_in, col, nameCol, name, reverse=False, cleaned=False ) :
+    """ DataFrame, string, string, string, bool, bool--> int"""
+    # A,B,C,D in 10,10,5,7 => D's rank is 3 since there are two ahead of it
+    if cleaned :
+        df = df_in
+    else :
+        df = df_in.copy()
+        df[col] = clean_numeric_col( df[col] )
+    if reverse :
+        return 1 + df.loc[ df[col] < df.loc[df[nameCol] == name,col ].iloc[0] ].shape[0]
+    else :
+        return 1 + df.loc[ df[col] > df.loc[df[nameCol] == name,col ].iloc[0] ].shape[0]
 
 
 def get_ID_col( df_in ) :

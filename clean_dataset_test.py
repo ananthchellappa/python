@@ -121,5 +121,21 @@ class Test_clean_num_col ( unittest.TestCase ) :
         expected = 0
         self.assertEqual( clean_numeric_col(testcase).isna().sum(), expected )
 
+class Test_rank_in_col( unittest.TestCase ) :
+
+    def setUp( self ) :
+        # https://www.kaggle.com/jinxbe/wnba-player-stats-2017
+        self.df = pd.read_csv( "DATA/WNBA Stats.csv")
+    
+    def test_wnba_exp1( self ) :
+        testcase = rank_in_col( self.df, 'Experience', 'Name', 'Plenette Pierson' )
+        expected = 1
+        self.assertEqual( testcase, expected )
+
+    def test_wnba_exp2( self ) :
+        testcase = rank_in_col( self.df, 'Experience', 'Name', 'Diana Taurasi' )
+        expected = 6
+        self.assertEqual( testcase, expected )
+
 pdb.set_trace()
 unittest.main()
