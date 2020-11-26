@@ -137,5 +137,15 @@ class Test_rank_in_col( unittest.TestCase ) :
         expected = 6
         self.assertEqual( testcase, expected )
 
+    def test_wnba_saniya( self ) :
+        testcase = rank_in_col( self.df, 'Experience', 'Name', 'Saniya Chong' )
+        expected = 121
+        self.assertEqual( testcase, expected )
+    
+    def test_wnba_reverse( self ) :
+        testcase = rank_in_col( self.df, 'Experience', 'Name', 'Saniya Chong', reverse=True)
+        expected = 121
+        self.assertEqual( testcase, expected )
+
 pdb.set_trace()
 unittest.main()

@@ -191,7 +191,17 @@ def get_ID_col( df_in ) :
             name_col = col
     return name_col
 
-
+def get_col_tops( df, nameCol, col, N=5 ) :
+    """ DataFrame, string, string, int --> string"""
+    count = 0
+    names = []
+    for val in sorted(df[col].unique(),reverse=True)[:N] :
+        stars = df.loc[ df[col] == val, nameCol]
+        count += len( stars )
+        names.extend(stars.to_list() )
+        if count >= N :
+            break
+    return names
 
 # given a dataframe, report the outliers in each column
 # default is preview mode. User has to set update=True
