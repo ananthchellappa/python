@@ -1,0 +1,19 @@
+How to generate the CSV from Cadence?
+
+In the CIW : 
+
+axlWriteMonteCarloResultsCSV( axlGetWindowSession() "ExplorerRun.0" ?testName "the_full_test_name" ?outputPath "/tmp/csvfiles" )
+The full test name is the default name that Explorer has given your test. Usually it will be libName_cellName_1
+
+In Explorer, the Run name of a past run can be accessed by loading it using Results > Select.
+The test-name can be got from the value field of the first row of the Setup pane.
+
+Once you have your CSV, run Priyanka's script using : 
+
+python3 RegrVarsReport.py /path/to/file.csv 
+
+and it will create /path/to/file_regrpt.csv
+
+Enjoy! Getting to know which devices are responsible for the variation (Eg. current-mirror output spread, op-amp random-offset, etc) is very useful.
+
+It goes without saying that, when you run Monte-Carlo, you have to go into Options and check that box that says "save Statistical Parameter data"
