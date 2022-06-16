@@ -1,0 +1,44 @@
+Something that doesn't exist (according to Google). A good one to build up your profile on Upwork!
+
+When you record a Teams meeting and then generate a transcript, you get a .vtt file with is a Web Video Transcript Texts file.
+
+It looks like this (at start) (note that the right angle bracket was removed from --right-ang-brack to meet Upwork requirements for posting)
+
+WEBVTT
+
+00:00:02.350 -- 00:00:06.630
+Ok everyone lets get starter
+welcome to the meeting.
+
+00:00:06.630 -- 00:00:11.201
+thanks for joining , it may be
+late at your end
+
+You get the idea.. It presents the output in about four second chunk - making it difficult to go in and search and edit.
+
+Some portions, you don't care, but some portions, you want to make corrections.
+
+It's difficult if it's in four second chunks.
+
+We want a script that we can run as
+
+prompt $ chunk_vtt.pl filename.vtt 1.5
+
+The 1.5 above is the chunk time in MINUTES. So, 1.5 means 90 seconds. Therefore, 0.1 would mean six seconds.
+
+What do we do in the case of the user starting with a file that has four second chunks and wanting six second chunks? (not a practical case, but a good one to test anyway)
+
+input :  4, 8, 12, 16, 20, 24,     # showing the end time of the chunks assuming start at 0 sec
+output : 8, 16, 24, 30
+
+you get the idea - in the output, each chunk must be AT LEAST six seconds - therefore, we can expect at least two chunks from the input in each output chunk.
+
+So, the output will have the correct timestamps from the input and the aggregated text (don't change number of characters on line, etc)
+
+Keep in mind that you cannot assume anything about the input chunks - which is why the timestamps are there - they can be of varying length from one to the next.
+
+When you submit, you can run these test cases on the attached file and send me the result
+
+12 seconds (so the argument would be 0.2
+1 minute
+5 minutes
