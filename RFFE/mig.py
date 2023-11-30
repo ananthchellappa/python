@@ -107,9 +107,15 @@ def parse_bit_field_name(bit_field_name):
 
 def parse_default_value(default_value):
     try:
-        length, value = int(default_value.lower().split('b', 1)[0]), default_value.lower().split('b', 1)[1]
+        length, int_value = int(default_value.lower().split('b', 1)[0]), int(default_value.lower().split('b', 1)[1], 2)
     except Exception:
         raise ValueError("Invalid default_value: {}".format(default_value))
+
+    value = f'{int_value:08b}'
+    if length > len(value):
+        value = '0' * (length - len(value)) + value
+    elif length < len(value):
+        value = value[-length:]
 
     try:
         bits = []
@@ -152,6 +158,7 @@ def read_register_map(excel_ws):
     for index, row in enumerate(excel_data[header_index + 1:]):
         register_address = row[header_indices["register_address"]]
         data_bits = row[header_indices["data_bits"]]
+        # bit_field_name = row[header_indices["bit_field_name"]]
         bit_field_name = row[header_indices[MANDATORY_HEADERS[2].replace(" ","_").lower()]]
         default_value = row[header_indices["default"]]
 
@@ -184,15 +191,19 @@ def translate_line(old_reg_address_dict, old_bitfieds_dict, new_reg_address_dict
 
         previous_writes = previous_writes or {}
 
-        write_command = command_segments[0]
-        address_size_str = command_segments[1]
+        # write_command = command_segments[0]
+        usid_str = command_segments[1]
         address_str = command_segments[2]
         data_str = command_segments[3]
-        data_bits = [int(c) for c in data_str if c in ['1', '0']]
+
+        if data_str.lower().startswith("0x"):
+            data_int = int(data_str.strip(), 16)
+            data_bits = [int(c) for c in f'{data_int:08b}']
+        else:
+            data_bits = [int(c) for c in data_str if c in ['1', '0']]
+
         if len(data_bits) < 8:
             data_bits = [0] * (8 - len(data_bits)) + data_bits
-
-        address_size = integer=int(address_size_str.strip(), 2)
         address = integer=int(address_str.strip(), 16)
 
         old_register_details = old_reg_address_dict.get(address)
@@ -284,7 +295,7 @@ def translate_line(old_reg_address_dict, old_bitfieds_dict, new_reg_address_dict
 
                 mod_lines.append("{},{},{},{}{}".format(
                     new_write_command,
-                    address_size_str,
+                    usid_str,
                     new_reg_address_dict.get(reg)[0].get("register_address").get("string"),
                     "_".join(["".join([str(i) for i in l]) for l in mod_data_segments]),
                     comment_part,
@@ -329,7 +340,7 @@ def main(old_excel, new_excel, old_cmd_text, new_cmd_text=None, previous_writes=
         os.makedirs(output_folder, exist_ok=True)
         new_cmd_text = os.path.join(output_folder, input_filename)
 
-    print("Input file:", old_cmd_text)
+    print("\n\nInput file:", old_cmd_text)
     print("Output file:", new_cmd_text)
 
     previous_writes = previous_writes or {}
@@ -385,6 +396,8 @@ def main(old_excel, new_excel, old_cmd_text, new_cmd_text=None, previous_writes=
         else:
             new_lines.append(old_line)
 
+    new_lines = [l if l.endswith("\n") else l + "\n" for l in new_lines]
+
     with open(new_cmd_text, "w", encoding="utf-8") as fd:
         fd.write("".join(new_lines))
 
@@ -396,7 +409,7 @@ if __name__ == '__main__':
     # print(sys.argv)
     # sys.exit(0)
 
-    # sys.argv += ["oldREG.xlsx", "newREG.xlsx", "demo/ex1/in.txt"]
+    # sys.argv += ["oldREG.xlsx", "newREG.xlsx", "test.txt"]
     # sys.argv += ["old_0x59.xlsx", "new_0x59.xlsx", "test.txt"]
 
     if len(sys.argv) < 4:
