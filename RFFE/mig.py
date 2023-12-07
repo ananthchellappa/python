@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# NOTE : supports HEX addresses (3rd field) ONLY - so run your script through this if necessary : 
+# perl -p -e 's/^\s*([^,]+,[^,]+),(\d+)/sprintf("$1,0x%02x",oct("0b$2"))/e unless /^\s*[^,]+,[^,]+,0[xX]/;'
 
 import os
 import sys
