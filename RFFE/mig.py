@@ -250,9 +250,22 @@ def translate_line(old_reg_address_dict, old_bitfieds_dict, new_reg_address_dict
             mod_lines = []
             for reg in modified_regs:
                 mod_data = modified_regs[reg]
-                mod_functions = [v[0] for v in mod_data]
-                mod_bits = [v[1] for v in mod_data]
-                mod_values = [v[2] for v in mod_data]
+
+                mod_functions = []
+                mod_values = []
+                size_changed = set()
+
+                for entry in mod_data:
+                    mod_functions.append(entry[0])
+                    mod_bits_len = entry[1][0] - entry[1][1] + 1
+                    mod_bits_values = entry[2]
+                    while mod_bits_len > len(mod_bits_values):
+                        mod_bits_values = [0] + mod_bits_values
+                        size_changed.add(entry[0])
+                    while mod_bits_values and mod_bits_len < len(mod_bits_values):
+                        mod_bits_values = mod_bits_values[1:]
+                        size_changed.add(entry[0])
+                    mod_values.append(mod_bits_values)
 
                 def cmp_databits(r):
                     startbit = r.get("data_bits", {}).get("start_bit", 0)
@@ -264,13 +277,18 @@ def translate_line(old_reg_address_dict, old_bitfieds_dict, new_reg_address_dict
                 mod_data_functions = []
 
                 original_names = []
+                size_warning = False
 
                 for seg in mod_register_details:
                     seg_fn = seg.get("bit_field_name", {}).get("name")
                     original_name = seg.get("bit_field_name", {}).get("original_name")
 
                     if seg_fn in mod_functions:
-                        original_names.append(original_name)
+                        if seg_fn in size_changed:
+                            original_names.append("{} has different size".format(original_name))
+                            size_warning = True
+                        else:
+                            original_names.append(original_name)
                         mod_data_segments.append(mod_values[mod_functions.index(seg_fn)])
                         mod_data_functions.append(seg_fn)
                         previous_writes[seg_fn] = address, mod_values[mod_functions.index(seg_fn)]
@@ -290,10 +308,10 @@ def translate_line(old_reg_address_dict, old_bitfieds_dict, new_reg_address_dict
                 else:
                     new_write_command = "w"
 
-                if existing_comment:
+                if not size_warning and existing_comment:
                     comment_part = " // {}".format(existing_comment)
                 else:
-                    comment_part = " // {}".format(",".join(original_names)) if original_names else ""
+                    comment_part = " // {}{}".format("WARNING - " if size_warning else "", ",".join(original_names)) if original_names else ""
 
                 mod_lines.append("{},{},{},{}{}".format(
                     new_write_command,
@@ -411,8 +429,8 @@ if __name__ == '__main__':
     # print(sys.argv)
     # sys.exit(0)
 
-    # sys.argv += ["oldREG.xlsx", "newREG.xlsx", "test.txt"]
-    # sys.argv += ["old_0x59.xlsx", "new_0x59.xlsx", "test.txt"]
+    # sys.argv += ["oldREG.xlsx", "newREG.xlsx", "ex9.txt"]
+    # sys.argv += ["old_0x59.xlsx", "new_0x59.xlsx", "ex9.txt"]
 
     if len(sys.argv) < 4:
         print("Usage: {} <old-excel-file> <new-excel-file> <old-cmd-text>".format(os.path.basename(__file__)), file=sys.stderr)
