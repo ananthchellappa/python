@@ -1,0 +1,34 @@
+A register command script consists of lines of the form
+
+r, ID, ADDR, DATA //. read
+w,...    // write
+er, ...   // extended read
+ew,...   // extended write
+d, 10_000 // delay 10 microseconds
+
+The script looks at the first word, and in the case that the word is "d", looks at the second word, which is the delay duration in NANOSECONDS (Eg. 19.2). In the cases of r,w,er,ew, the rest of the line is ignored. Whitespace may be present on either side of words and commas. They are to be ignored.
+
+Note that the delay parameter in a "d, xxx" statement can have underscores for readability, which are to be ignored.
+
+As the python script reads the file, it is to build up a running total which is to be printed at the end.
+
+The command line use model :
+
+$ python3 script.py reqd_RCL_text_file  reqd_write_clk_period_in_ns optional_read_clk_period_in_ns
+
+Eg : python3 script.py TMUX_BG.txt 19.2
+
+When the optional_read_clk_period_in_ns is omitted, the script will assume that it is 2X (TWICE) the reqd_write_clk_period_in_ns (NANOSECONDS). Since the read_clk_period is optional and calculated by the script if ncessary, it is hereafter referred to as read_clk_period_in_ns.
+
+The case of the delay statement is self-explanatory - just add the delay to the total.
+
+For the other commands, use the following rules : 
+
+w : 25 times the reqd_write_clk_period_in_ns
+r : 17 times reqd_write_clk_period_in_ns + 10 times read_clk_period_in_ns
+ew : 34 times the reqd_write_clk_period_in_ns
+er : 26 times the reqd_write_clk_period_in_ns + 10 times read_clk_period_in_ns
+
+Final value is to be reported in MICROSECONDS (1000 NANOSECONDS)
+
+Please ignore final command if it is a delay - it's usually (large) just to ensure the simulation does not terminate because there are not further commands..
