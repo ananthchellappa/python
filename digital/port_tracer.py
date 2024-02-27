@@ -3,19 +3,52 @@ import re
 import sys
 
 class PortTracer:
-    def __init__(self,path):
+    def __init__(self,path,top_module_name, out_to_trace):
+        
+        #Initialization
         self.module_definitions = {}
         self.package_definitions = {}
+
         self.output_ports = {}
         self.input_ports = {}
         self.internal_sigs = {}
-        self.parameters = {}
         
+        self.parameters = {}
+
+        self.dont_trace_modules = [] 
+        self.dont_trace_ports = {}
+
+        self.module_to_trace = top_module_name
+        self.out_to_trace= out_to_trace
+        self.hierarchy = ""
+
+        #Reading Modules
         self.read_definitions(path)
         self.set_ports("input")
         self.set_ports("output")
         self.set_internal_sigs()
         self.set_parameters()
+        self.parse_command_line_arguments()
+
+    def parse_command_line_arguments(self):
+        # Look for the "-dtms" argument in the command line arguments
+        if "-dtms" in sys.argv:
+            dtms_index = sys.argv.index("-dtms") + 1
+            if dtms_index < len(sys.argv):
+                dtms_arg = sys.argv[dtms_index]
+                self.dont_trace_modules = [module.strip() for module in dtms_arg.split(',')]
+
+        # Look for the "-dtps" argument in the command line arguments
+        if "-dtps" in sys.argv:
+            dtps_index = sys.argv.index("-dtps") + 1
+            if dtps_index < len(sys.argv):
+                dtps_arg = sys.argv[dtps_index]
+                for entry in dtps_arg.split(','):
+                    module, port = [item.strip() for item in entry.split(':')]
+                    if module in self.dont_trace_ports:
+                        self.dont_trace_ports[module].append(port)
+                    else:
+                        self.dont_trace_ports[module] = [port]
 
     def read_definitions(self,path):
         path=os.path.expandvars(path)
@@ -146,7 +179,6 @@ class PortTracer:
 
         # Extract parameters
         param_pattern =  re.compile(r'(?:#\s*\(\s*)?parameter\s+(\w+)\s*=\s*([\S\'_]+(?:\s*,\s*(?:parameter)?\s*\w+\s*=\s*[\S\'_]+\s*)*)\s*(?:\)\s*|;)')
-        #param_pattern = re.compile(r'(?:#\s*\(\s*)?parameter\s+(\w+)\s*=\s*([\S\'_]+(?:\s*,\s*(?:parameter)?\s*\w+\s*=\s*[\S\'_]+)*)\s*(?:\)\s*|;)'
         
 
         param_matches = param_pattern.findall(definition)
@@ -241,6 +273,7 @@ class PortTracer:
         return internal_signals
 
     def get_assignment_statement(self, module_name, signal_name):
+        
         module_definition = self.module_definitions.get(module_name)
         if not module_definition:
             raise ValueError(f"Module definition for '{module_name}' not found.")
@@ -248,43 +281,67 @@ class PortTracer:
         signal_pattern = re.compile(r'\b' + re.escape(signal_name) + r'\s*=\s*([^;]+);', re.DOTALL)
         match = signal_pattern.search(module_definition)
 
-        if match:
+        if (module_name in self.dont_trace_ports) and (signal_name in self.dont_trace_ports[module_name]):
+            print (f"{self.out_to_trace} = {self.hierarchy[:-1]}/DP:{signal_name}\n")
+            sys.exit(0)
+        
+        elif module_name in self.dont_trace_modules:
+            print (f"{self.out_to_trace} = {self.hierarchy}DM:{module_name}/{signal_name}\n")
+            sys.exit(0)    
+        
+        elif match:
             return match.group(0)
-        else:
+
+        else :
             return None
 
     def trace_output_source(self, parent_module: str, signal_of_interest: str):
+
         parent_definition = self.module_definitions.get(parent_module)
         if not parent_definition:
             raise ValueError(f"Module '{parent_module}' not found.")
 
         # Extracting instances and their connections within the parent module
         instance_pattern = r'(\w+)\s+(?:#\s*\(\s*\.(?:.*?)\)\s*)?\s*(\w+)\s*\((.*?)\);'
-        
         instances = re.findall(instance_pattern, parent_definition, re.DOTALL)
         
         for module_name, instance_name, connection_list in instances:
             # Skip the entry where 'module' is incorrectly interpreted as a module name
             if module_name == "module":
                 continue
-            
+ 
             connection_map = self._parse_instance_connections(connection_list, module_name)
+
+            if connection_map is not None:
+       
+                for child_port, parent_signal in connection_map.items():
+                    if parent_signal == signal_of_interest:
+                        
+                        if parent_module == self.module_to_trace :
+                            self.hierarchy=f"{instance_name}."
+                        
+                        elif module_name not in self.dont_trace_modules:
+                            self.hierarchy+=f"{instance_name}."
+                        
+                        return [module_name, instance_name, child_port]
             
-            for child_port, parent_signal in connection_map.items():
-                if parent_signal == signal_of_interest:
-                    return [module_name, instance_name, child_port]
+            else :
+                print (f"{self.out_to_trace} = {self.hierarchy}UD:{module_name}>{signal_of_interest}\n")
+                sys.exit(0)
 
         return []    
 
     def _get_port_order(self, module_name):
         module_definition = self.module_definitions.get(module_name)
-        if not module_definition:
-            raise ValueError(f"Module definition for '{module_name}' not found.")
 
+        if not module_definition and module_name != self.module_to_trace:
+            return None
+            
 
         port_declaration_pattern =  r'\bmodule\b.*?(?:\((.*?)\))?\s*\((.*?)\);'
-        match = re.search(port_declaration_pattern, module_definition, re.DOTALL)
         
+        match = re.search(port_declaration_pattern, module_definition, re.DOTALL)
+
         if not match:
             raise ValueError(f"Module declaration not found in module '{module_name}'.")
 
@@ -313,19 +370,20 @@ class PortTracer:
             return dict(zip(child_port_order, ports))
 
     def _parse_instance_connections(self, connection_list, child_module_name):
-
+        
         child_port_order = self._get_port_order(child_module_name)
+        if child_port_order is not None : 
+            if '(' in connection_list and ')' in connection_list:
+                connections = re.findall(r'\.(\w+)\s*\(([^)]+)\)', connection_list)
+                port_mapping = {child_port: parent_signal.strip() 
+                                for child_port, parent_signal in connections 
+                                if child_port in child_port_order}
+                
+            else:
+                ports = [port.strip() for port in connection_list.split(',')]
+                return dict(zip(child_port_order, ports))
 
-        if '(' in connection_list and ')' in connection_list:
-            connections = re.findall(r'\.(\w+)\s*\(([^)]+)\)', connection_list)
-            port_mapping = {child_port: parent_signal.strip() 
-                            for child_port, parent_signal in connections 
-                            if child_port in child_port_order}
-        else:
-            ports = [port.strip() for port in connection_list.split(',')]
-            return dict(zip(child_port_order, ports))
-
-        return port_mapping
+            return port_mapping
 
     def _parse_named_port_assignments(self, connection_list):
         connections = re.findall(r'\.(\w+)\s*\(([^)]+)\)', connection_list)
@@ -346,6 +404,7 @@ class PortTracer:
     def find_internal_signals_in_expression(self, module_name: str, assignment: str):
         if module_name not in self.internal_sigs:
             raise ValueError(f"Module '{module_name}' does not exist or has no internal signals recorded.")
+
 
         # Extract the right-hand side (RHS) of the assignment
         _, rhs = assignment.split('=', 1)
@@ -469,6 +528,7 @@ class PortTracer:
         self.module_definitions[parent_module] = re.sub(pattern, '', self.module_definitions[parent_module], flags=re.DOTALL)
 
     def replace_internal_sig(self, assignment:str, sub_assignment:str):
+
         # Parse the LHS and RHS from the sub_assignment
         lhs_sub, rhs_sub = sub_assignment.split('=', 1)
         lhs_sub = lhs_sub.strip()
@@ -485,20 +545,34 @@ class PortTracer:
         return updated_assignment
 
     def trace_sig( self, module_name:str, sig_name:str) :
+        
+        if not self.module_definitions.get(module_name) :
+            if (module_name == self.module_to_trace):
+                raise ValueError(f"Module definition for '{module_name}' not found.")
+            
+
         if not (sig_name in self.output_ports[module_name] or sig_name in self.internal_sigs[module_name] ) :
             raise ValueError(f"{sig_name} is not a port/signal of {module_name}.")
+        
         assignment = self.get_assignment_statement( module_name, sig_name )
+        
         self.identify_and_update_register_instance(module_name)
+
         if assignment is None :
             mod, inst, port = self.trace_output_source( module_name, sig_name )
+            
             raw_assignment = self.trace_sig( mod, port )
 
             assignment = self.map_ports( module_name, inst, raw_assignment ) # go from ports to this module's internal sigs, or ports
+            
+
         int_sigs_to_trace = self.find_internal_signals_in_expression( module_name, assignment )
+        
         while( int_sigs_to_trace ) : # keep processing until
             for sig in int_sigs_to_trace :
                 sub_assignment = self.trace_sig( module_name, sig )
                 assignment = self.replace_internal_sig( assignment, sub_assignment)
+                
             int_sigs_to_trace = self.find_internal_signals_in_expression( module_name, assignment )
         
         source_assignment = tracer.trace_params(module_name,assignment)
@@ -521,20 +595,18 @@ class PortTracer:
         return expression
 
 if __name__ == '__main__' :
-    import pdb
+    #import pdb
     if len(sys.argv) < 3 :
         print("Must supply folder location as arg1,")
         print("\t\t top module name as arg2,")
         print("\t\t and output signal name as arg3.")
 
     else :
-        pdb.set_trace()
+        #pdb.set_trace()
         directory = sys.argv[1] if len(sys.argv) > 2 else ""
         module_name = sys.argv[2] if len(sys.argv) > 2 else ""
         outp_to_trace = sys.argv[3] if len(sys.argv) > 2 else ""
-        tracer = PortTracer(directory)
+        tracer = PortTracer(directory,module_name, outp_to_trace)
 
-        print(tracer.module_definitions.keys())
-        
         source_assignment = tracer.trace_sig(module_name, outp_to_trace )
         print(f"Definiton of port {outp_to_trace} of module {module_name}:\n {source_assignment}")
