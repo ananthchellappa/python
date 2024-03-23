@@ -1,5 +1,6 @@
 import csv
 import sys
+# import pdb
 
 def get_base_instance(instance):
     parts = instance.split('/')
@@ -11,14 +12,18 @@ def get_base_instance(instance):
 def filter_csv(input_file, output_file):
     with open(input_file, 'r') as infile, open(output_file, 'w', newline='') as outfile:
         reader = csv.DictReader(infile)
+        column_names = reader.fieldnames
+        inst_idx = column_names.index('Instance')
+
         writer = csv.DictWriter(outfile, fieldnames=reader.fieldnames)
         writer.writeheader()
 
         seen = {}
         for row in reader:
             instance = row['Instance']
+            if '/' not in instance : continue
             base_instance = get_base_instance(instance)
-            rest_of_row = ','.join([row[field] for field in reader.fieldnames[2:]])  # Capture only what is to the right of the Instance column
+            rest_of_row = ','.join([row[field] for field in reader.fieldnames[inst_idx+1:]])  # Capture only what is to the right of the Instance column
 
             key = (base_instance, rest_of_row)
             if key not in seen:
@@ -32,4 +37,5 @@ if __name__ == '__main__':
 
     input_file = sys.argv[1]
     output_file = sys.argv[2]
+    # pdb.set_trace()
     filter_csv(input_file, output_file)
