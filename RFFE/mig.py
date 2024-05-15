@@ -3,6 +3,8 @@
 # NOTE : supports HEX addresses (3rd field) ONLY - so run your script through this if necessary : 
 # perl -p -e 's/^\s*([^,]+,[^,]+),(\d+)/sprintf("$1,0x%02x",oct("0b$2"))/e unless /^\s*[^,]+,[^,]+,0[xX]/;'
 
+# then $ python3 ~/python/mig.py  newREG.xlsx oldREG.xlsx ex4/in.txt
+
 import os
 import sys
 
