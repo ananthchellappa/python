@@ -11,6 +11,8 @@ import sys
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
+from rich import print
+
 
 REGISTER_MAP_SHEET = "Register Map Detail"
 
@@ -183,7 +185,7 @@ def read_register_map(excel_ws):
 
 
 def translate_line(old_reg_address_dict, old_bitfieds_dict, new_reg_address_dict, new_bitfieds_dict, old_line, previous_writes=None):
-    print("Processing line:", old_line)
+    print("Processing line:", old_line.strip())
     if "//" in old_line:
         existing_comment = old_line.split("//", 1)[1].strip()
     else:
@@ -192,10 +194,9 @@ def translate_line(old_reg_address_dict, old_bitfieds_dict, new_reg_address_dict
     old_line = old_line.split("//")[0].strip()
     command_segments = [s.strip() for s in old_line.strip().split(",")]
     if len(command_segments) >= 4:
-
         previous_writes = previous_writes or {}
 
-        # write_command = command_segments[0]
+        write_command = command_segments[0]
         usid_str = command_segments[1]
         address_str = command_segments[2]
         data_str = command_segments[3]
@@ -208,130 +209,130 @@ def translate_line(old_reg_address_dict, old_bitfieds_dict, new_reg_address_dict
 
         if len(data_bits) < 8:
             data_bits = [0] * (8 - len(data_bits)) + data_bits
-        address = integer=int(address_str.strip(), 16)
+        address = int(address_str.strip(), 16)
 
         old_register_details = old_reg_address_dict.get(address)
         if not old_register_details:
             print("{}: Could not find address {} in old register".format(old_line, address_str))
             return [old_line], previous_writes
-        else:
-            old_bitfield_data = [r.get("bit_field_name", {}) for r in old_register_details]
+        
+        # This is gonna check if the data is same as default value and skip writing if it is
+        default_bits = [bit for reg in old_register_details for bit in reg['default_value']['bits']]
+        if data_bits == default_bits:
+            print(f"Skipping default write: {old_line.strip()}")
+            return [], previous_writes  # Return empty list to skip this write
 
-            old_bitfield_names = [b.get("name") for b in old_bitfield_data]
-            old_bitfield_unused = [b.get("unused", True) for b in old_bitfield_data]
-            old_bitfield_defaults = [r.get("default_value", {}).get("bits") for r in old_register_details]
-            old_reg_bits = [(r.get("data_bits", {}).get("start_bit"), r.get("data_bits", {}).get("end_bit")) for r in old_register_details]
-            old_reg_data_segments = [data_bits[::-1][b[1]:b[0] + 1][::-1] for b in old_reg_bits]
+        old_bitfield_data = [r.get("bit_field_name", {}) for r in old_register_details]
+        old_bitfield_names = [b.get("name") for b in old_bitfield_data]
+        old_bitfield_unused = [b.get("unused", True) for b in old_bitfield_data]
+        old_reg_bits = [(r.get("data_bits", {}).get("start_bit"), r.get("data_bits", {}).get("end_bit")) for r in old_register_details]
+        old_reg_data_segments = [data_bits[::-1][b[1]:b[0] + 1][::-1] for b in old_reg_bits]
 
-            modified_regs = {}
+        modified_regs = {}
 
-            for i in range(len(old_bitfield_names)):
-
-                bitfield_name = old_bitfield_names[i]
-                bitfield_unused = old_bitfield_unused[i]
+        for i, bitfield_name in enumerate(old_bitfield_names):
+            if not old_bitfield_unused[i]:
                 old_reg_segment_value = old_reg_data_segments[i]
-                old_default_value = old_bitfield_defaults[i]
+                new_bitfield_data = new_bitfieds_dict.get(bitfield_name)
+                if new_bitfield_data:
+                    for bdata in new_bitfield_data:
+                        new_address = bdata.get("register_address", {}).get("integer")
+                        new_register_details = new_reg_address_dict.get(new_address)
+                        new_reg_bitfield_names = [r.get("bit_field_name", {}).get("name") for r in new_register_details]
+                        new_reg_bits = [(r.get("data_bits", {}).get("start_bit"), r.get("data_bits", {}).get("end_bit")) for r in new_register_details]
 
-                if not bitfield_unused:
-                    new_bitfield_data = new_bitfieds_dict.get(bitfield_name)
-                    if new_bitfield_data:
-                        for bdata in new_bitfield_data:
-                            new_address = bdata.get("register_address", {}).get("integer")
+                        if bitfield_name in new_reg_bitfield_names:
+                            new_reg_segment_index = new_reg_bitfield_names.index(bitfield_name)
                             new_default_value = bdata.get("default_value", {}).get("bits")
-                            new_register_details = new_reg_address_dict.get(new_address)
-                            new_reg_bitfield_names = [r.get("bit_field_name", {}).get("name") for r in new_register_details]
-                            new_reg_bits = [(r.get("data_bits", {}).get("start_bit"), r.get("data_bits", {}).get("end_bit")) for r in new_register_details]
+                            if new_default_value != old_reg_segment_value:
+                                if new_address not in modified_regs:
+                                    modified_regs[new_address] = []
+                                modified_regs[new_address].append((bitfield_name, new_reg_bits[new_reg_segment_index], old_reg_segment_value))
 
-                            if bitfield_name in new_reg_bitfield_names:
-                                new_reg_segment_index = new_reg_bitfield_names.index(bitfield_name)
-                                if old_default_value != old_reg_segment_value:
-                                    if new_address not in modified_regs:
-                                        modified_regs[new_address] = []
-                                    modified_regs[new_address].append((bitfield_name, new_reg_bits[new_reg_segment_index], old_reg_segment_value))
+        mod_lines = []
+        for reg in modified_regs:
+            mod_data = modified_regs[reg]
 
-            mod_lines = []
-            for reg in modified_regs:
-                mod_data = modified_regs[reg]
+            mod_functions = []
+            mod_values = []
+            size_changed = set()
 
-                mod_functions = []
-                mod_values = []
-                size_changed = set()
+            for entry in mod_data:
+                mod_functions.append(entry[0])
+                mod_bits_len = entry[1][0] - entry[1][1] + 1
+                mod_bits_values = entry[2]
+                while mod_bits_len > len(mod_bits_values):
+                    mod_bits_values = [0] + mod_bits_values
+                    size_changed.add(entry[0])
+                while mod_bits_values and mod_bits_len < len(mod_bits_values):
+                    mod_bits_values = mod_bits_values[1:]
+                    size_changed.add(entry[0])
+                mod_values.append(mod_bits_values)
 
-                for entry in mod_data:
-                    mod_functions.append(entry[0])
-                    mod_bits_len = entry[1][0] - entry[1][1] + 1
-                    mod_bits_values = entry[2]
-                    while mod_bits_len > len(mod_bits_values):
-                        mod_bits_values = [0] + mod_bits_values
-                        size_changed.add(entry[0])
-                    while mod_bits_values and mod_bits_len < len(mod_bits_values):
-                        mod_bits_values = mod_bits_values[1:]
-                        size_changed.add(entry[0])
-                    mod_values.append(mod_bits_values)
+            def cmp_databits(r):
+                startbit = r.get("data_bits", {}).get("start_bit", 0)
+                endbit = r.get("data_bits", {}).get("end_bit", 0)
+                return (8 - startbit) * 1000 + (8 - endbit)
 
-                def cmp_databits(r):
-                    startbit = r.get("data_bits", {}).get("start_bit", 0)
-                    endbit = r.get("data_bits", {}).get("end_bit", 0)
-                    return (8 - startbit) * 1000 + (8 - endbit)
+            mod_register_details = sorted(new_reg_address_dict.get(reg), key=lambda r: cmp_databits(r))
+            mod_data_segments = []
+            mod_data_functions = []
 
-                mod_register_details = sorted(new_reg_address_dict.get(reg), key=lambda r: cmp_databits(r))
-                mod_data_segments = []
-                mod_data_functions = []
+            original_names = []
+            size_warning = False
 
-                original_names = []
-                size_warning = False
+            for seg in mod_register_details:
+                seg_fn = seg.get("bit_field_name", {}).get("name")
+                original_name = seg.get("bit_field_name", {}).get("original_name")
 
-                for seg in mod_register_details:
-                    seg_fn = seg.get("bit_field_name", {}).get("name")
-                    original_name = seg.get("bit_field_name", {}).get("original_name")
-
-                    if seg_fn in mod_functions:
-                        if seg_fn in size_changed:
-                            original_names.append("{} has different size".format(original_name))
-                            size_warning = True
-                        else:
-                            original_names.append(original_name)
-                        mod_data_segments.append(mod_values[mod_functions.index(seg_fn)])
-                        mod_data_functions.append(seg_fn)
-                        previous_writes[seg_fn] = address, mod_values[mod_functions.index(seg_fn)]
-                    elif seg_fn in previous_writes:
-                        old_saved_address, saved_segment = previous_writes[seg_fn]
-                        if old_saved_address != address:
-                            mod_data_segments.append(saved_segment)
-                        else:
-                            mod_data_segments.append(seg.get("default_value", {}).get("bits"))
+                if seg_fn in mod_functions:
+                    if seg_fn in size_changed:
+                        original_names.append("{} has different size".format(original_name))
+                        size_warning = True
+                    else:
+                        original_names.append(original_name)
+                    mod_data_segments.append(mod_values[mod_functions.index(seg_fn)])
+                    mod_data_functions.append(seg_fn)
+                    previous_writes[seg_fn] = address, mod_values[mod_functions.index(seg_fn)]
+                elif seg_fn in previous_writes:
+                    old_saved_address, saved_segment = previous_writes[seg_fn]
+                    if old_saved_address != address:
+                        mod_data_segments.append(saved_segment)
                     else:
                         mod_data_segments.append(seg.get("default_value", {}).get("bits"))
-
-                new_address = new_reg_address_dict.get(reg)[0].get("register_address").get("integer")
-
-                if 32 <= new_address:
-                    new_write_command = "ew"
                 else:
-                    new_write_command = "w"
+                    mod_data_segments.append(seg.get("default_value", {}).get("bits"))
 
-                if not size_warning and existing_comment:
-                    comment_part = " // {}".format(existing_comment)
-                else:
-                    comment_part = " // {}{}".format("WARNING - " if size_warning else "", ",".join(original_names)) if original_names else ""
+            new_address = new_reg_address_dict.get(reg)[0].get("register_address").get("integer")
 
+            if 32 <= new_address:
+                new_write_command = "ew"
+            else:
+                new_write_command = "w"
+
+            if not size_warning and existing_comment:
+                comment_part = " // {}".format(existing_comment)
+            else:
+                comment_part = " // {}{}".format("WARNING - " if size_warning else "", ",".join(original_names)) if original_names else ""
+
+            mod_data = "_".join(["".join([str(i) for i in l]) for l in mod_data_segments])
+            if mod_data != "00000000":  # Skip writing if all bits are 0
                 mod_lines.append("{},{},{},{}{}".format(
                     new_write_command,
                     usid_str,
                     new_reg_address_dict.get(reg)[0].get("register_address").get("string"),
-                    "_".join(["".join([str(i) for i in l]) for l in mod_data_segments]),
+                    mod_data,
                     comment_part,
                 ))
-                print("Translated line:", mod_lines[-1])
+                print("Translated line:", mod_lines[-1], "\n")
 
-            if mod_lines:
-                return mod_lines, previous_writes
-            else:
-                return [old_line], previous_writes
+        if mod_lines:
+            return mod_lines, previous_writes
+        else:
+            return [], previous_writes
     else:
         print("Could not find enough segments in line:", old_line, file=sys.stderr)
         return [old_line], previous_writes
-
 
 
 def main(old_excel, new_excel, old_cmd_text, new_cmd_text=None, previous_writes=None):
@@ -375,6 +376,10 @@ def main(old_excel, new_excel, old_cmd_text, new_cmd_text=None, previous_writes=
     if not new_register_map:
         return False, "Failed to read register map from: {} Error: {}".format(new_excel, error)
 
+    
+    print("Old Register Map:", old_register_map) # I just wanted to see the register map so I printed it
+    print("New Register Map:", new_register_map)
+
     old_reg_address_dict = {}
     old_bitfieds_dict = {}
 
@@ -409,19 +414,22 @@ def main(old_excel, new_excel, old_cmd_text, new_cmd_text=None, previous_writes=
 
     new_lines = []
     for line_index, old_line in enumerate(old_lines):
+        # made some changes here as the original code was not handling the case where the line was empty
         if stripped_lines[line_index].lower().startswith("ew") or stripped_lines[line_index].lower().startswith("w"):
             line_result, previous_writes = translate_line(old_reg_address_dict, old_bitfieds_dict, new_reg_address_dict, new_bitfieds_dict, old_line, previous_writes=previous_writes)
-            for lr in line_result:
-                new_lines.append(lr)
-            if old_line.endswith("\n"):
-                new_lines[-1] += "\n"
+            new_lines.extend(line_result)
         else:
             new_lines.append(old_line)
 
-    new_lines = [l if l.endswith("\n") else l + "\n" for l in new_lines]
+    # This is gonna make sure a line hhas newline at the end.
+    new_lines = [l.rstrip() + "\n" for l in new_lines if l.strip()]
+
+    # This is when all writes in the original file were default values and have been skipped.
+    if not new_lines:
+        new_lines = ["// All writes in the original file were default values and have been skipped.\n"]
 
     with open(new_cmd_text, "w", encoding="utf-8") as fd:
-        fd.write("".join(new_lines))
+        fd.writelines(new_lines)
 
     return True, None
 
