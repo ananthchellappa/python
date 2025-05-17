@@ -26,7 +26,7 @@ worksheet = writer.sheets['Testing']
 (max_row, max_col) = df.shape
 
 # Create a list of column headers, to use in add_table().
-column_settings = [{'header': column} for column in ['#] + df.columns] # AC
+column_settings = [{'header': column} for column in ['#'] + df.columns.tolist()]
 
 # Add the Excel table structure. Pandas will add the data.
 worksheet.add_table(1, 1, max_row+1, max_col+1, 
