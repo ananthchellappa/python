@@ -40,16 +40,13 @@ else:
     df = pd.read_csv(in_csv)
     comment_row = None
 
-# ✅ Convert to numeric where possible
+# Convert to numeric where possible
 df = df.apply(pd.to_numeric, errors='coerce')
-
-
-# pdb.set_trace()
 
 headers = [{'header': col} for col in df.columns.tolist()]
 
 writer = pd.ExcelWriter(basename + '.xlsx', engine='xlsxwriter')
-df.to_excel(writer, sheet_name='EC Table', header=False, index=False, startrow=3, startcol=1)
+df.to_excel(writer, sheet_name='EC Table', header=False, index=False, startrow=4, startcol=1)
 
 workbook = writer.book
 worksheet = writer.sheets['EC Table']
@@ -59,10 +56,15 @@ if comment_row is not None:
     for col_idx, val in enumerate(comment_row):
         worksheet.write(2, 1 + col_idx, str(val) if pd.notna(val) else '')
 
-# Add the table starting from row 3 (0-based index), which is row 4 in Excel
+# Manually write column headers one row above the data
+for col_idx, header in enumerate(df.columns):
+    worksheet.write(3, 1 + col_idx, header)
+
+# Add the table starting from the manually written header
 start_col = 1
 end_col = start_col + df.shape[1] - 1
-worksheet.add_table(3, start_col, 3 + df.shape[0], end_col, 
+worksheet.add_table(
+    3, start_col, 4 + df.shape[0], end_col,
     {
         'columns': headers,
         'header_row': True,
