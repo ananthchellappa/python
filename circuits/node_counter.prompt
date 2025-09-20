@@ -1,0 +1,36 @@
+I have a certain number of nodes in my netlist. I want to find the "culprits" - the instances that are contributing to this node count. Sometimes, there are surprises. For example, D-flip-flops can contribute a lot of nodes, which slow the simulation down. In this case, the user can use a simple behavioral model for the D-flip-flop to reduce node-count and speed up the simulation.
+
+From the netlist, one can get the names of every instance in the design.
+
+For example, if, at the top-level, there are instances xtop1 and xtop2.
+
+If xtop1 is an instance of cell top_A and that cell contains instances xa1, xa2 and xa3, then, the spectre.ic will contain node names whose prefixes are
+
+xtop1.xa1
+xtop1.xa2
+xtop1.xa3 
+
+Tell me if you're with me so far
+
+-----
+
+I want to give the user a -depth option (how deep to go). So, the report would be:
+
+(say the total is 296 nodes - which is not hard to get, say unix : wc -l )
+
+level 0 :
+
+xtop1 : 52 ## 
+xtop2 : 244 ####### 
+
+xtop1.xa1 : 4
+xtop1.xa2 : 33 # 
+xtop1.xa3 : 17 
+xtop2.xb1 : 4 
+xtop2.xb2 : 50 ## 
+xtop2.xb3 : 52 ## 
+xtop2.xb4 : 138 ##### 
+
+and so on, in this report above, the depth is 2.
+
+You see that each # character is representing 10% of the total.
