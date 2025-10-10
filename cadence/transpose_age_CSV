@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+import argparse
+import pandas as pd
+from pandas.api.types import CategoricalDtype
+
+def main():
+    p = argparse.ArgumentParser(description="Pivot tool output to wide CSV")
+    p.add_argument("input_csv", help="Path to the input CSV")
+    p.add_argument("output_csv", help="Path to write the pivoted CSV")
+    p.add_argument("--output-col", default="Output",
+                   help="Column whose values become the row index (default: Output)")
+    p.add_argument("--value-col", default=None,
+                   help="Column providing cell values; defaults to the 4th column (index 3)")
+    p.add_argument("--fill", default="",
+                   help="Value to fill missing cells (default: empty string)")
+    args = p.parse_args()
+
+    df = pd.read_csv(args.input_csv, dtype=str, keep_default_na=False)
+
+
+    # Fixed: first column = names for wide columns
+    name_col = df.columns[0]
+    output_col = args.output_col
+
+    # Determine value column
+    if args.value_col and args.value_col in df.columns:
+        value_col = args.value_col
+    else:
+        if len(df.columns) > 4:
+            value_col = df.columns[4]  # 5th column (index 4)
+        else:
+            raise ValueError("Input file has fewer than 5 columns; cannot default to column index 4 (the 5th column)")
+
+    # Preserve first-seen order of wide columns (names)
+    name_order = df[name_col].dropna().drop_duplicates().tolist()
+    df[name_col] = df[name_col].astype(CategoricalDtype(categories=name_order, ordered=True))
+
+    # Preserve first-seen order of rows (Output)
+    output_order = df[output_col].dropna().drop_duplicates().tolist()
+
+    # Build the pivot
+    wide = df.pivot_table(
+        index=output_col,
+        columns=name_col,
+        values=value_col,
+        aggfunc="first",   # if duplicates exist, take the first
+    ).sort_index(axis=1)   # respects categorical order for columns
+
+    # De-categorize columns to avoid old pandas reset_index bug
+    if isinstance(wide.columns, pd.CategoricalIndex):
+        wide.columns = wide.columns.astype(object)
+
+    # Reorder rows to input-first-seen order
+    wide = wide.reindex(output_order)
+
+    # Flatten and fill
+    out = wide.reset_index().fillna(args.fill)
+
+    # Ensure output_col is first
+    cols = [output_col] + [c for c in out.columns if c != output_col]
+    out = out[cols]
+
+    out.to_csv(args.output_csv, index=False)
+
+if __name__ == "__main__":
+    main()
