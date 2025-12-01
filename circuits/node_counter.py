@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ic_culprits.py (refactored)
+
 from __future__ import annotations
 import argparse
 import re
