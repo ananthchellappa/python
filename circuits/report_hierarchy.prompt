@@ -1,0 +1,215 @@
+elaborate:
+
+I need a Python script to build a hierarchy tree from a SPICE netlist.
+
+Please read the requirements carefully and implement exactly as specified.
+
+==================================================
+INPUT FORMAT
+==================================================
+
+The netlist contains subcircuit definitions of the form:
+
+.subckt SUBCKT_NAME pin1 pin2 ...
+   ...
+.ends
+
+Inside a subckt, subcircuit instances of interest begin with x or X, e.g.:
+
+xInstName net1 net2 ... netN SUBCKT_NAME optional_tokens optional_params
+
+Example:
+
+XBW_current_mirror_pfets_v2_1 b_i<0> b_i<1> N_1 sub vdd BP vss BW_current_mirror_pfets_v4 $ $x=5500 $y=5500 $w=600 $h=400
+
+Important:
+- Pin/net names may contain non-alphanumeric characters such as:
+  < > [ ] / . _ -
+  Example: b_i<0>
+- Therefore, DO NOT try to find the instantiated subckt name by scanning from the left and stopping at the first “non-word” token. That is wrong.
+
+Correct parsing rule for an X-instance line:
+1. Split the logical line into whitespace-separated tokens.
+2. Ignore token 0 (instance name).
+3. Scan FROM THE RIGHT.
+4. Skip any trailing parameter assignment tokens of the form:
+      something=value
+   including tokens like:
+      $x=5500
+5. Skip any trailing standalone decorator/punctuation tokens like:
+      $
+6. The next remaining token to the left is the instantiated subckt name.
+
+If there are no trailing $ or param=value tokens, then the instantiated subckt name is simply the last token.
+
+==================================================
+LINE CONTINUATIONS AND COMMENTS
+==================================================
+
+The script must:
+- join continuation lines beginning with +
+- ignore full-line SPICE comments beginning with *
+- ignore inline // comments
+
+==================================================
+HIERARCHY RULES
+==================================================
+
+I want a hierarchy tree by SUBCKT TYPE, not by instance name.
+
+Example:
+If top cell A contains:
+- XB1, XB2 of cell B
+- XC1, XC2 of cell C
+
+and B contains:
+- 4 instances of D
+- 1 instance of C
+- 1 instance of E
+
+then output should be conceptually:
+
+A
+|----- B (2)
+|      |----- D (4)
+|      |----- C
+|      \----- E
+\----- C (2)
+
+Rules:
+- Group children by instantiated subckt type
+- Show instance count only if > 1
+- Only include children that are themselves defined by a .subckt in the same netlist
+  (ignore primitives or external/model-defined cells)
+
+==================================================
+TOP CELL DETECTION
+==================================================
+
+Top cell selection must follow this priority:
+
+1. If user provides --top, use that.
+2. Otherwise:
+   If there is exactly ONE X-instance declaration that occurs OUTSIDE any .subckt/.ends block,
+   and the cell it instantiates is defined by a .subckt in this netlist,
+   then that instantiated cell is the top cell.
+3. Otherwise:
+   Find subckts that are defined but never instantiated by any other defined subckt.
+   If there is exactly one such subckt, use that as the top.
+4. Otherwise, print a clear error asking user to specify --top.
+
+==================================================
+OUTPUT FORMAT
+==================================================
+
+Use ASCII tree formatting like:
+
+TOP
+|----- CHILD1 (2)
+|      |----- GRANDCHILD
+|      \----- OTHER_GRANDCHILD (4)
+\----- CHILD2
+
+Requirements:
+- Preserve first appearance order of child subckt types under a parent
+  (do NOT alphabetically sort unless I ask for that)
+- If recursion/cycles occur, do not loop forever; instead print:
+      [recursive]
+
+==================================================
+DEPTH OPTION
+==================================================
+
+Add a command line option:
+
+    --depth N
+
+Behavior:
+- --depth 0  => print only the top cell
+- --depth 1  => print top + direct children
+- --depth 2  => descend two levels below top
+- if omitted, depth is unlimited
+
+==================================================
+CLI
+==================================================
+
+Command line usage should be like:
+
+python3 spice_hier.py my_netlist.sp
+python3 spice_hier.py my_netlist.sp --top MY_TOP
+python3 spice_hier.py my_netlist.sp --depth 2
+python3 spice_hier.py my_netlist.sp --top MY_TOP --depth 3
+
+==================================================
+IMPLEMENTATION REQUEST
+==================================================
+
+Please provide:
+1. the complete Python script
+2. brief explanation of the key parsing logic
+3. a short example showing why scanning from the right is necessary for a line like:
+
+XBW_current_mirror_pfets_v2_1 b_i<0> b_i<1> N_1 sub vdd BP vss BW_current_mirror_pfets_v4 $ $x=5500 $y=5500 $w=600 $h=400
+
+Do not give pseudocode. Give a runnable script.
+
+///////////////////////////////////////////////////////////////////////////////
+
+compact:
+
+Write a runnable Python script that builds a hierarchy tree from a SPICE netlist.
+
+Requirements:
+
+- Parse .subckt ... .ends blocks
+- Find X/x instance lines inside subckts and outside subckts
+- Join continuation lines starting with +
+- Ignore full-line * comments and inline // comments
+
+IMPORTANT parsing rule for X-instance lines:
+- Net names may contain punctuation like < > [ ] / . _ -
+- Therefore, DO NOT find the subckt name by scanning from the left for a “non-word” token
+- Instead:
+  1. split the line into tokens
+  2. ignore token 0 (instance name)
+  3. scan from the RIGHT
+  4. skip trailing param=value tokens like foo=bar or $x=100
+  5. skip trailing standalone punctuation/decorator tokens like $
+  6. the next token to the left is the instantiated subckt name
+
+Example:
+XBW_current_mirror_pfets_v2_1 b_i<0> b_i<1> N_1 sub vdd BP vss BW_current_mirror_pfets_v4 $ $x=5500 $y=5500 $w=600 $h=400
+
+Correct instantiated subckt name is:
+BW_current_mirror_pfets_v4
+
+Hierarchy behavior:
+- Group children by subckt type, not by instance name
+- Show count only if >1
+- Only include children that are themselves defined by a .subckt in the same file
+- Preserve first appearance order
+- Detect recursion and print [recursive]
+
+Top-cell selection priority:
+1. --top if provided
+2. otherwise, if exactly one X-instance exists outside all .subckt definitions and its cell is defined in the netlist, use that instantiated cell as top
+3. otherwise, if exactly one defined subckt is never instantiated by another defined subckt, use that
+4. otherwise error and ask for --top
+
+Add:
+--depth N
+where:
+- 0 = top only
+- 1 = top + direct children
+- omitted = unlimited
+
+Output format like:
+A
+|----- B (2)
+|      |----- D (4)
+|      |----- C
+|      \----- E
+\----- C (2)
+
+Please provide the complete Python script, not pseudocode.
