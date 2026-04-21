@@ -4,6 +4,7 @@ import sys
 import argparse
 from collections import Counter, defaultdict
 
+import pdb
 
 SUBCKT_RE = re.compile(r'^\s*\.subckt\s+(\S+)\b', re.IGNORECASE)
 ENDS_RE   = re.compile(r'^\s*\.ends\b', re.IGNORECASE)
@@ -44,26 +45,31 @@ def logical_lines(lines):
 
 def extract_instantiated_cell(tokens):
     """
-    Rule:
+    Return the instantiated subckt name from an X-instance line.
+
+    Strategy:
+    - token[0] is the instance name
     - scan from the right
-    - skip trailing name=value tokens
-    - skip trailing standalone punctuation tokens like '$'
-    - next remaining token is the instantiated subckt name
+    - skip trailing tokens that are clearly metadata / params / options
+    - first remaining token is the instantiated subckt name
     """
     if len(tokens) < 2:
         return None
 
-    i = len(tokens) - 1
-
-    while i >= 1:
+    for i in range(len(tokens) - 1, 0, -1):
         t = tokens[i]
 
-        if "=" in t and not t.startswith("="):
-            i -= 1
+        # SPICE/S-edit style metadata tokens:
+        # $, $m, $x=..., $y=..., etc.
+        if t.startswith("$"):
             continue
 
+        # ordinary parameter assignments
+        if "=" in t and not t.startswith("="):
+            continue
+
+        # pure punctuation separators, if any
         if re.fullmatch(r'[^A-Za-z0-9_.<>/\[\]-]+', t):
-            i -= 1
             continue
 
         return t
@@ -204,7 +210,7 @@ def main():
         help="Maximum depth below the top to print (0=top only, 1=top plus children)"
     )
     args = ap.parse_args()
-
+#    pdb.set_trace()
     subckt_children, defined_subckts, top_level_x_instances = parse_netlist(args.netlist)
 
     try:
