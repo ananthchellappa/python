@@ -144,7 +144,9 @@ def make_node_filter(skip_globals, extra_globals_csv, regex_exclude, case_insens
 
 
 # Precompiled regex for v(<node>) syntax.
-_VTOKEN = re.compile(r"^v\((.+)\)$", re.IGNORECASE)
+# Precompiled regexes
+_VTOKEN = re.compile(r"^v\((.+?)\)(?:\s*=\s*|\s+|$)", re.IGNORECASE)
+_INUM_TOKEN = re.compile(r"^i\d+\(", re.IGNORECASE)
 
 
 def parse_node_from_ic_line(line):
@@ -152,33 +154,43 @@ def parse_node_from_ic_line(line):
     """
     Extract node name from a spectre.ic line.
 
-    Returns None for comments/empty/internal-state lines.
+    Handles:
+      v(<node>)=1.1
+      v(<node>) 1.1
+      <node> 1.1
+      <node>=1.1
 
-    Accepted first tokens:
-      - <node> <value>
-      - v(<node>) <value>
-
-    Skips lines where the token begins with:
-      - '@'  → device internal (e.g. @M1:gm)
-      - 'i(' → currents (e.g. i(R1))
+    Skips:
+      @...
+      i(...)
+      iNUMBER(...)
     """
     s = line.strip()
     if not s:
         return None
 
-    # Comments: spectre often uses '*' at column 1; we also ignore // and #.
     if s.startswith("*") or s.startswith("//") or s.startswith("#"):
         return None
 
     first = s.split()[0]
 
-    # Skip internal quantities / branch currents
-    if first.startswith("@") or first.lower().startswith("i("):
+    if first.startswith("@"):
         return None
 
-    m = _VTOKEN.match(first)
+    low = first.lower()
+
+    # Skip branch currents like i(R1) and terminal currents like i1(...)
+    if low.startswith("i(") or _INUM_TOKEN.match(first):
+        return None
+
+    # v(<node>)=value or v(<node>) value
+    m = _VTOKEN.match(s)
     if m:
         return m.group(1)
+
+    # Plain node=value
+    if "=" in first:
+        return first.split("=", 1)[0]
 
     return first
 
