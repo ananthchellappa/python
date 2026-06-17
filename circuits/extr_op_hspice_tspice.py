@@ -8,9 +8,13 @@ INST_RE = re.compile(r"\S+\.m_mos\b")
 # Default output order (preferred)
 DEFAULT_ORDER = ["REGION", "vbs", "vds", "vdsat", "vgt", "vgs", "vth", "id", "gm", "gds"]
 
+
 def usage(prog: str) -> int:
     print(
         f"Usage: {prog} [-all] <result_file_path_name> <device_name> [-latest]\n"
+        f"  <device_name> may use either '.' or '/' as the hierarchy separator.\n"
+        f"  Example: XDUT/X1/X2/xMNcdio.m_mos is accepted as XDUT.X1.X2.xMNcdio.m_mos\n"
+        f"\n"
         f"  Default prints (order): {', '.join(DEFAULT_ORDER)} (id falls back to ids if missing)\n"
         f"  -all    : print all rows in the mini-table\n"
         f"  -latest : if <result_file_path_name> includes a directory, ignore it and instead\n"
@@ -19,6 +23,35 @@ def usage(prog: str) -> int:
         file=sys.stderr,
     )
     return 2
+
+
+def device_candidates_from_arg(device_arg: str) -> list[str]:
+    """
+    Return acceptable device-name spellings.
+
+    Result files commonly use '.' as the hierarchy separator, but users may
+    naturally type '/'.
+
+    Examples:
+      XDUT.X1.xMN.m_mos      -> XDUT.X1.xMN.m_mos
+      XDUT/X1/xMN.m_mos      -> XDUT.X1.xMN.m_mos
+      /XDUT/X1/xMN.m_mos/    -> XDUT.X1.xMN.m_mos
+    """
+    candidates: list[str] = []
+
+    def add(s: str) -> None:
+        s = s.strip()
+        if s and s not in candidates:
+            candidates.append(s)
+
+    add(device_arg)
+
+    if "/" in device_arg:
+        slash_as_dot = re.sub(r"/+", ".", device_arg.strip()).strip(".")
+        add(slash_as_dot)
+
+    return candidates
+
 
 def newest_subdir(cwd: str) -> str | None:
     best_path = None
@@ -37,6 +70,7 @@ def newest_subdir(cwd: str) -> str | None:
     except OSError:
         return None
     return best_path
+
 
 def resolve_latest(path_arg: str, latest: bool) -> tuple[str, bool]:
     """
@@ -67,10 +101,12 @@ def resolve_latest(path_arg: str, latest: bool) -> tuple[str, bool]:
 
     return candidate, True
 
-def parse_table_for_device(lines: list[str], start_model_idx: int, device: str):
+
+def parse_table_for_device(lines: list[str], start_model_idx: int, device_candidates: list[str]):
     """
     Given the file lines and an index pointing at a MODEL row, return:
-      (insts, col, rows_dict, end_idx)
+      (matched_device, insts, col, rows_dict, end_idx)
+
     where rows_dict maps rowname -> value_for_device.
     """
     n = len(lines)
@@ -91,10 +127,19 @@ def parse_table_for_device(lines: list[str], start_model_idx: int, device: str):
 
     header_block = " ".join(l.strip() for l in lines[k + 1 : h + 1])
     insts = INST_RE.findall(header_block)
-    if not insts or device not in insts:
+    if not insts:
         return None
 
-    col = insts.index(device)
+    matched_device = None
+    for d in device_candidates:
+        if d in insts:
+            matched_device = d
+            break
+
+    if matched_device is None:
+        return None
+
+    col = insts.index(matched_device)
 
     rows = {}
     j = start_model_idx
@@ -111,9 +156,12 @@ def parse_table_for_device(lines: list[str], start_model_idx: int, device: str):
         # else: malformed/short row => ignore (fault tolerant)
         j += 1
 
-    return insts, col, rows, j
+    return matched_device, insts, col, rows, j
 
-def extract_device_table(path: str, device: str, print_all: bool) -> int:
+
+def extract_device_table(path: str, device_arg: str, print_all: bool) -> int:
+    device_candidates = device_candidates_from_arg(device_arg)
+
     try:
         with open(path, "r", errors="replace") as f:
             lines = f.readlines()
@@ -125,12 +173,12 @@ def extract_device_table(path: str, device: str, print_all: bool) -> int:
     i = 0
     while i < n:
         if lines[i].lstrip().startswith("MODEL"):
-            parsed = parse_table_for_device(lines, i, device)
+            parsed = parse_table_for_device(lines, i, device_candidates)
             if parsed is None:
                 i += 1
                 continue
 
-            _insts, _col, rows, _end = parsed
+            _matched_device, _insts, _col, rows, _end = parsed
 
             if print_all:
                 # Print in file order (MODEL line onward)
@@ -160,8 +208,16 @@ def extract_device_table(path: str, device: str, print_all: bool) -> int:
 
         i += 1
 
-    print(f"Device not found in any MOS mini-table: {device}", file=sys.stderr)
+    if len(device_candidates) == 1:
+        print(f"Device not found in any MOS mini-table: {device_arg}", file=sys.stderr)
+    else:
+        print(
+            "Device not found in any MOS mini-table. Tried:\n"
+            + "\n".join(f"  {d}" for d in device_candidates),
+            file=sys.stderr,
+        )
     return 1
+
 
 def main() -> int:
     args = sys.argv[1:]
@@ -187,7 +243,7 @@ def main() -> int:
     if len(positionals) != 2:
         return usage(sys.argv[0])
 
-    path_arg, device = positionals
+    path_arg, device_arg = positionals
 
     try:
         path, latest_applied = resolve_latest(path_arg, latest)
@@ -198,7 +254,8 @@ def main() -> int:
     if latest and latest_applied:
         print(f"Using file: {os.path.abspath(path)}\n")
 
-    return extract_device_table(path, device, print_all)
+    return extract_device_table(path, device_arg, print_all)
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
