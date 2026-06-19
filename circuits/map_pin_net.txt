@@ -1,0 +1,48 @@
+Example:
+
+XTOP in out vdd vss top
+
+.subckt top IN OUT VDD VSS
+X1 IN n1 inv
+X2 n1 OUT inv
+.ends top
+
+.subckt inv A Y
+XBUF A Y buf
+.ends inv
+
+.subckt buf I O
+.ends buf
+
+Then:
+
+python3 script.py --topinst XTOP test.sp inv:A
+
+prints:
+
+inv:A
+-----
+XTOP.X1                                           inv:A -> in
+XTOP.X2                                           inv:A -> XTOP.n1
+
+And:
+
+python3 script.py --topinst XTOP test.sp XTOP.n1
+
+prints:
+
+XTOP.n1
+-------
+XTOP.X1                                           inv:Y -> XTOP.n1
+XTOP.X2                                           inv:A -> XTOP.n1
+
+Current deliberate limitations:
+
+Hierarchy separator is period only.
+No special global-net handling.
+No primitive device reporting.
+.subckt/.ends are case-insensitive.
+Cell names, instance names, pin names, and net names are case-sensitive.
+Subckt instance cell name is detected by known .subckt name and pin count.
+
+One caveat: if a .subckt has zero body instances, querying its pins still works when that cell is instantiated, but querying internal connectivity obviously has nothing below it to report.
