@@ -341,6 +341,33 @@ def build_design_occurrences(
 def query_cell_pin(occurrences: List[Occurrence], query: str) -> int:
     cell, pin = query.split(":", 1)
 
+    # New mode:
+    #   cellname:*
+    # Report every pin connection for every instance of cellname.
+    if pin == "*":
+        hits = [
+            occ for occ in occurrences
+            if occ.cell == cell
+        ]
+
+        if not hits:
+            print(f"No matches for {cell}:*")
+            return 1
+
+        print(f"{cell}:*")
+        print("-" * len(f"{cell}:*"))
+
+        for occ in hits:
+            print()
+            print(f"instance : {occ.hier_inst} of {cell}")
+            print("Pin Name : Net Name")
+            for pin_name, net_name in occ.pin_to_hnet.items():
+                print(f"{pin_name} : {net_name}")
+
+        return 0
+
+    # Existing mode:
+    #   cellname:pin_name
     hits = [
         occ for occ in occurrences
         if occ.cell == cell and pin in occ.pin_to_hnet
@@ -357,7 +384,6 @@ def query_cell_pin(occurrences: List[Occurrence], query: str) -> int:
         print(f"{occ.hier_inst:<50} {cell}:{pin} -> {occ.pin_to_hnet[pin]}")
 
     return 0
-
 
 def query_node(occurrences: List[Occurrence], node: str) -> int:
     hits: List[Tuple[Occurrence, str]] = []
