@@ -1,3 +1,5 @@
+Latest version also supports : python3 script.py --topinst TOP /path/to/netlist 'cellname:*' # dump out all pin assignments on instances of cell named cellname
+
 Example:
 
 XTOP in out vdd vss top
