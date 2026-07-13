@@ -5,11 +5,14 @@ Generate simple behavioral Verilog-A models from structural gate-level Verilog.
 
 Usage:
 
-    python3 generate_veriloga_from_verilog.py /path/to/verilog_file
-    python3 generate_veriloga_from_verilog.py /path/to/verilog_file cellname
+    python3 generate_veriloga_from_verilog.py /path/to/cells.v
+    python3 generate_veriloga_from_verilog.py /path/to/cells.v cellname
 
-With no cellname, one <module_name>.va file is generated in the current
-directory for every convertible module in the input Verilog file.
+With no cellname, the script attempts to generate one <module_name>.va file
+in the current directory for every convertible module in the input file.
+
+When a cellname is supplied, only that module is parsed and generated.
+Unsupported or unusual unrelated modules do not prevent its generation.
 
 Supported Verilog primitives:
 
@@ -22,35 +25,43 @@ Supported Verilog primitives:
     not
     buf
 
-Assumptions:
+Supported module declaration styles:
 
-  * Each module is combinational.
-  * Each module has exactly one output.
-  * Primitive instances use positional connections.
-  * The first primitive terminal is the output.
-  * Remaining primitive terminals are inputs.
-  * Signals are scalar, not vectors.
-  * Intermediate signals have one driver.
-  * specify ... endspecify blocks are ignored.
-  * Continuous assignments and behavioral always blocks are not supported.
-
-Example input:
-
-    module example (X, A1, A2, B);
-
+    module cell (X, A, B);
         output X;
-        input  A1, A2, B;
-
-        wire a_int;
-
-        or   io1  (a_int, A1, A2);
-        nand ina1 (X, a_int, B);
-
-        specify
-            ...
-        endspecify
-
+        input A, B;
+        ...
     endmodule
+
+    module cell (
+        output X,
+        input A,
+        input B
+    );
+        ...
+    endmodule
+
+Portless modules are recognized and skipped:
+
+    module filler;
+        specify
+        endspecify
+    endmodule
+
+Assumptions and limitations:
+
+  * Modules are combinational.
+  * Modules may have one or more outputs.
+  * Primitive instances use positional connections.
+  * The first primitive terminal is the primitive output.
+  * Remaining primitive terminals are primitive inputs.
+  * Signals are scalar, not vectors.
+  * Each generated signal has only one driver.
+  * specify ... endspecify blocks are ignored.
+  * Continuous assignments are not supported.
+  * always blocks and other behavioral Verilog are not supported.
+  * User-defined submodule instances are not flattened.
+  * Primitive delay and drive-strength specifications are not supported.
 """
 
 from __future__ import annotations
@@ -64,6 +75,7 @@ from typing import Iterable
 
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+
 SUPPORTED_PRIMITIVES = {
     "and",
     "nand",
@@ -89,6 +101,13 @@ class Gate:
 
 
 @dataclass
+class ExtractedModule:
+    name: str
+    port_header: str
+    body: str
+
+
+@dataclass
 class Module:
     name: str
     ports: list[str]
@@ -99,13 +118,25 @@ class Module:
 
 
 def remove_comments(text: str) -> str:
-    """Remove // and /* ... */ comments from Verilog source."""
+    """
+    Remove Verilog // and /* ... */ comments.
 
-    # Remove block comments first.
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    String literals are not specially handled because ordinary structural
+    cell-library modules generally do not contain relevant string literals.
+    """
 
-    # Remove line comments.
-    text = re.sub(r"//[^\n]*", "", text)
+    text = re.sub(
+        r"/\*.*?\*/",
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+
+    text = re.sub(
+        r"//[^\n]*",
+        "",
+        text,
+    )
 
     return text
 
@@ -121,37 +152,70 @@ def remove_specify_blocks(text: str) -> str:
     )
 
 
-def find_matching_parenthesis(text: str, opening_index: int) -> int:
-    """Return the index of the ')' matching text[opening_index] == '('."""
+def find_matching_delimiter(
+    text: str,
+    opening_index: int,
+    opening_char: str,
+    closing_char: str,
+) -> int:
+    """
+    Return the index of the closing delimiter matching an opening delimiter.
+    """
 
-    if opening_index >= len(text) or text[opening_index] != "(":
-        raise ValueError("opening_index does not point to '('")
+    if opening_index >= len(text) or text[opening_index] != opening_char:
+        raise ValueError(
+            f"opening_index does not point to {opening_char!r}"
+        )
 
     depth = 0
 
     for index in range(opening_index, len(text)):
         char = text[index]
 
-        if char == "(":
+        if char == opening_char:
             depth += 1
-        elif char == ")":
+        elif char == closing_char:
             depth -= 1
 
             if depth == 0:
                 return index
 
-    raise ConversionError("Unmatched '(' in module declaration")
+    raise ConversionError(
+        f"Unmatched {opening_char!r} delimiter"
+    )
+
+
+def find_matching_parenthesis(text: str, opening_index: int) -> int:
+    """Return the ')' matching text[opening_index] == '('."""
+
+    return find_matching_delimiter(
+        text,
+        opening_index,
+        "(",
+        ")",
+    )
+
+
+def skip_whitespace(text: str, index: int) -> int:
+    """Advance index past whitespace."""
+
+    while index < len(text) and text[index].isspace():
+        index += 1
+
+    return index
 
 
 def split_top_level_commas(text: str) -> list[str]:
     """
-    Split at commas that are not inside parentheses or brackets.
+    Split text at commas not enclosed in parentheses, brackets, or braces.
     """
 
     result: list[str] = []
     start = 0
+
     paren_depth = 0
     bracket_depth = 0
+    brace_depth = 0
 
     for index, char in enumerate(text):
         if char == "(":
@@ -162,14 +226,27 @@ def split_top_level_commas(text: str) -> list[str]:
             bracket_depth += 1
         elif char == "]":
             bracket_depth -= 1
-        elif char == "," and paren_depth == 0 and bracket_depth == 0:
-            result.append(text[start:index].strip())
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+        elif (
+            char == ","
+            and paren_depth == 0
+            and bracket_depth == 0
+            and brace_depth == 0
+        ):
+            item = text[start:index].strip()
+
+            if item:
+                result.append(item)
+
             start = index + 1
 
-    final_part = text[start:].strip()
+    final_item = text[start:].strip()
 
-    if final_part:
-        result.append(final_part)
+    if final_item:
+        result.append(final_item)
 
     return result
 
@@ -178,19 +255,35 @@ def split_statements(body: str) -> list[str]:
     """
     Split a module body into semicolon-terminated statements.
 
-    Semicolons inside parentheses are ignored.
+    Semicolons enclosed in parentheses, brackets, or braces are ignored.
     """
 
     statements: list[str] = []
     start = 0
+
     paren_depth = 0
+    bracket_depth = 0
+    brace_depth = 0
 
     for index, char in enumerate(body):
         if char == "(":
             paren_depth += 1
         elif char == ")":
             paren_depth -= 1
-        elif char == ";" and paren_depth == 0:
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+        elif (
+            char == ";"
+            and paren_depth == 0
+            and bracket_depth == 0
+            and brace_depth == 0
+        ):
             statement = body[start:index].strip()
 
             if statement:
@@ -202,14 +295,15 @@ def split_statements(body: str) -> list[str]:
 
     if remainder:
         raise ConversionError(
-            f"Unterminated or unsupported statement near: {remainder[:80]!r}"
+            "Unterminated or unsupported statement near "
+            f"{remainder[:100]!r}"
         )
 
     return statements
 
 
 def unique_preserving_order(items: Iterable[str]) -> list[str]:
-    """Return unique items while retaining their original order."""
+    """Remove duplicates while preserving the original order."""
 
     seen: set[str] = set()
     result: list[str] = []
@@ -223,7 +317,12 @@ def unique_preserving_order(items: Iterable[str]) -> list[str]:
 
 
 def validate_identifier(identifier: str, context: str) -> None:
-    """Reject escaped identifiers, bit selections, expressions, and vectors."""
+    """
+    Validate a simple scalar Verilog identifier.
+
+    This deliberately rejects escaped identifiers, bit selections,
+    concatenations, constants, and expressions.
+    """
 
     if not IDENTIFIER_RE.fullmatch(identifier):
         raise ConversionError(
@@ -232,15 +331,167 @@ def validate_identifier(identifier: str, context: str) -> None:
         )
 
 
-def parse_declared_names(declaration: str, declaration_type: str) -> list[str]:
+def find_endmodule(
+    source: str,
+    search_start: int,
+) -> re.Match[str] | None:
+    """Find the next endmodule keyword."""
+
+    return re.search(
+        r"\bendmodule\b",
+        source[search_start:],
+        flags=re.IGNORECASE,
+    )
+
+
+def extract_modules(source: str) -> list[ExtractedModule]:
     """
-    Parse names from a declaration after input/output/wire/inout.
+    Extract modules without attempting to validate their contents.
+
+    This function recognizes:
+
+        module name (...);
+        module name;
+
+    Parameterized module headers are tolerated during extraction so an
+    unrelated parameterized module does not prevent extraction of later
+    requested modules. Such modules are rejected only if conversion is
+    attempted.
+    """
+
+    modules: list[ExtractedModule] = []
+    position = 0
+
+    module_start_re = re.compile(
+        r"\bmodule\s+([A-Za-z_][A-Za-z0-9_$]*)",
+        flags=re.IGNORECASE,
+    )
+
+    endmodule_word_re = re.compile(
+        r"\bendmodule\b",
+        flags=re.IGNORECASE,
+    )
+
+    while True:
+        module_match = module_start_re.search(source, position)
+
+        if not module_match:
+            break
+
+        module_name = module_match.group(1)
+        index = skip_whitespace(source, module_match.end())
+
+        if index >= len(source):
+            raise ConversionError(
+                f"Module {module_name!r} has an incomplete declaration"
+            )
+
+        parameterized = False
+
+        if source[index] == "#":
+            parameterized = True
+            index += 1
+            index = skip_whitespace(source, index)
+
+            if index >= len(source) or source[index] != "(":
+                raise ConversionError(
+                    f"Could not parse parameter list of module "
+                    f"{module_name!r}"
+                )
+
+            parameter_end = find_matching_parenthesis(source, index)
+            index = skip_whitespace(source, parameter_end + 1)
+
+        if index < len(source) and source[index] == "(":
+            port_end = find_matching_parenthesis(source, index)
+            port_header = source[index + 1 : port_end]
+            semicolon_index = skip_whitespace(source, port_end + 1)
+
+            if (
+                semicolon_index >= len(source)
+                or source[semicolon_index] != ";"
+            ):
+                raise ConversionError(
+                    f"Expected ';' after port list of module "
+                    f"{module_name!r}"
+                )
+
+        elif index < len(source) and source[index] == ";":
+            port_header = ""
+            semicolon_index = index
+
+        else:
+            # Try to recover by locating the declaration semicolon. This
+            # permits later modules to remain visible even if this module
+            # has an unsupported header form.
+            semicolon_index = source.find(";", index)
+
+            if semicolon_index < 0:
+                raise ConversionError(
+                    f"Could not find declaration terminator for module "
+                    f"{module_name!r}"
+                )
+
+            port_header = ""
+
+        end_match = endmodule_word_re.search(
+            source,
+            semicolon_index + 1,
+        )
+
+        if not end_match:
+            raise ConversionError(
+                f"No endmodule found for module {module_name!r}"
+            )
+
+        body = source[
+            semicolon_index + 1 : end_match.start()
+        ]
+
+        if parameterized:
+            # Mark the extracted header so parse_module can produce a clear
+            # error only when conversion of this module is attempted.
+            port_header = "__PARAMETERIZED_MODULE__" + port_header
+
+        modules.append(
+            ExtractedModule(
+                name=module_name,
+                port_header=port_header,
+                body=body,
+            )
+        )
+
+        position = end_match.end()
+
+    return modules
+
+
+def find_extracted_module(
+    modules: list[ExtractedModule],
+    requested_name: str,
+) -> ExtractedModule | None:
+    """Find a module by exact, case-sensitive name."""
+
+    for module in modules:
+        if module.name == requested_name:
+            return module
+
+    return None
+
+
+def parse_declared_names(
+    declaration: str,
+    declaration_type: str,
+) -> list[str]:
+    """
+    Parse names from an input, output, wire, or tri declaration.
 
     Examples:
 
         input A, B
+        output wire X
         output reg X
-        wire a_int
+        wire n1, n2
     """
 
     declaration = declaration.strip()
@@ -251,9 +502,8 @@ def parse_declared_names(declaration: str, declaration_type: str) -> list[str]:
             f"{declaration!r}"
         )
 
-    # Remove common scalar qualifiers.
     declaration = re.sub(
-        r"\b(?:wire|reg|logic|signed|unsigned|tri|supply0|supply1)\b",
+        r"\b(?:wire|reg|logic|signed|unsigned|tri|wand|wor)\b",
         " ",
         declaration,
         flags=re.IGNORECASE,
@@ -264,18 +514,18 @@ def parse_declared_names(declaration: str, declaration_type: str) -> list[str]:
     for item in split_top_level_commas(declaration):
         item = item.strip()
 
-        # Reject initialization or other declaration expressions.
         if "=" in item:
             raise ConversionError(
-                f"Initialized {declaration_type} declaration is not supported: "
-                f"{item!r}"
+                f"Initialized {declaration_type} declaration is not "
+                f"supported: {item!r}"
             )
 
         tokens = item.split()
 
         if len(tokens) != 1:
             raise ConversionError(
-                f"Could not parse {declaration_type} declaration item: {item!r}"
+                f"Could not parse {declaration_type} declaration item "
+                f"{item!r}"
             )
 
         name = tokens[0]
@@ -287,18 +537,24 @@ def parse_declared_names(declaration: str, declaration_type: str) -> list[str]:
 
 def parse_ansi_port_header(
     port_header: str,
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], bool]:
     """
-    Parse an ANSI-style module port header.
+    Attempt to parse an ANSI-style port header.
 
-    Example:
+    Returns:
 
-        input A1, input A2, input B, output X
+        ports, inputs, outputs, is_ansi
 
-    Also handles direction inheritance:
+    Examples:
 
-        input A1, A2, B, output X
+        input A, input B, output X
+        input A, B, output X, Y
     """
+
+    items = split_top_level_commas(port_header)
+
+    if not items:
+        return [], [], [], False
 
     ports: list[str] = []
     inputs: list[str] = []
@@ -306,12 +562,10 @@ def parse_ansi_port_header(
 
     current_direction: str | None = None
 
-    for item in split_top_level_commas(port_header):
-        item = item.strip()
-
+    for item in items:
         direction_match = re.match(
             r"^(input|output|inout)\b(.*)$",
-            item,
+            item.strip(),
             flags=re.IGNORECASE | re.DOTALL,
         )
 
@@ -319,13 +573,20 @@ def parse_ansi_port_header(
             current_direction = direction_match.group(1).lower()
             declaration = direction_match.group(2).strip()
         else:
-            declaration = item
+            if current_direction is None:
+                return [], [], [], False
 
-        if current_direction is None:
-            # Non-ANSI header; caller will parse declarations from body.
-            return [], [], []
+            declaration = item.strip()
 
-        names = parse_declared_names(declaration, current_direction)
+        if current_direction == "inout":
+            raise ConversionError(
+                "inout logic ports are not supported"
+            )
+
+        names = parse_declared_names(
+            declaration,
+            current_direction,
+        )
 
         for name in names:
             ports.append(name)
@@ -334,16 +595,14 @@ def parse_ansi_port_header(
                 inputs.append(name)
             elif current_direction == "output":
                 outputs.append(name)
-            else:
-                raise ConversionError(
-                    "inout logic ports are not supported by this generator"
-                )
 
-    return ports, inputs, outputs
+    return ports, inputs, outputs, True
 
 
 def parse_non_ansi_port_header(port_header: str) -> list[str]:
-    """Parse a traditional module header containing only port names."""
+    """
+    Parse a traditional module port header containing only port names.
+    """
 
     ports: list[str] = []
 
@@ -355,169 +614,19 @@ def parse_non_ansi_port_header(port_header: str) -> list[str]:
     return ports
 
 
-def extract_modules(source: str) -> list[tuple[str, str, str]]:
+def parse_gate_statement(
+    statement: str,
+    generated_index: int,
+) -> list[Gate]:
     """
-    Extract module name, port header, and body.
-
-    Supports both:
-
-        module cell_name (A, B, X);
-            ...
-        endmodule
-
-    and modules with no ports:
-
-        module filler_cell;
-            ...
-        endmodule
-
-    Returns tuples:
-
-        (module_name, port_header, module_body)
-
-    port_header is an empty string for a module with no port list.
-    """
-
-    modules: list[tuple[str, str, str]] = []
-    position = 0
-
-    module_start_re = re.compile(
-        r"\bmodule\s+([A-Za-z_][A-Za-z0-9_$]*)",
-        flags=re.IGNORECASE,
-    )
-
-    endmodule_re = re.compile(r"\bendmodule\b", flags=re.IGNORECASE)
-
-    while True:
-        match = module_start_re.search(source, position)
-
-        if not match:
-            break
-
-        module_name = match.group(1)
-        index = match.end()
-
-        # Skip whitespace after the module name.
-        while index < len(source) and source[index].isspace():
-            index += 1
-
-        if index >= len(source):
-            raise ConversionError(
-                f"Module {module_name!r} has an incomplete declaration"
-            )
-
-        if source[index] == "#":
-            raise ConversionError(
-                f"Parameterized module {module_name!r} is not supported"
-            )
-
-        if source[index] == "(":
-            close_paren = find_matching_parenthesis(source, index)
-            port_header = source[index + 1 : close_paren]
-            semicolon_index = close_paren + 1
-
-            while (
-                semicolon_index < len(source)
-                and source[semicolon_index].isspace()
-            ):
-                semicolon_index += 1
-
-            if (
-                semicolon_index >= len(source)
-                or source[semicolon_index] != ";"
-            ):
-                raise ConversionError(
-                    f"Expected ';' after port list of module "
-                    f"{module_name!r}"
-                )
-
-        elif source[index] == ";":
-            # Legal module declaration with no ports:
-            #
-            #     module eco1fillcp;
-            #
-            port_header = ""
-            semicolon_index = index
-
-        else:
-            declaration_preview = source[index : index + 40].splitlines()[0]
-
-            raise ConversionError(
-                f"Could not parse declaration of module {module_name!r} "
-                f"near {declaration_preview!r}"
-            )
-
-        end_match = endmodule_re.search(source, semicolon_index + 1)
-
-        if not end_match:
-            raise ConversionError(
-                f"No endmodule found for module {module_name!r}"
-            )
-
-        body = source[semicolon_index + 1 : end_match.start()]
-
-        modules.append(
-            (
-                module_name,
-                port_header,
-                body,
-            )
-        )
-
-        position = end_match.end()
-
-    return modules
-    
-def find_extracted_module(
-    extracted_modules: list[tuple[str, str, str]],
-    requested_name: str,
-) -> tuple[str, str, str] | None:
-    """
-    Find one extracted module by exact, case-sensitive name.
-    """
-
-    for module_data in extracted_modules:
-        module_name, _, _ = module_data
-
-        if module_name == requested_name:
-            return module_data
-
-    return None
-
-def strip_leading_gate_modifiers(text: str) -> str:
-    """
-    Reject primitive drive strength and delay specifications.
-
-    They could be ignored, but rejecting them avoids silently misparsing
-    complicated primitive syntax.
-    """
-
-    stripped = text.lstrip()
-
-    if stripped.startswith("#"):
-        raise ConversionError(
-            "Primitive delay specifications such as '#(...)' are not supported"
-        )
-
-    # A leading parenthesized item before the instance name normally means
-    # a primitive drive-strength declaration.
-    if stripped.startswith("("):
-        raise ConversionError(
-            "Primitive drive-strength specifications are not supported"
-        )
-
-    return stripped
-
-
-def parse_gate_statement(statement: str, generated_index: int) -> list[Gate]:
-    """
-    Parse one primitive statement.
+    Parse one structural primitive statement.
 
     Examples:
 
         and g1 (n1, A, B)
         not g2 (X, n1)
         and g1(n1,A,B), g2(X,n1,C)
+        xor (X, A, B)
     """
 
     primitive_match = re.match(
@@ -528,13 +637,30 @@ def parse_gate_statement(statement: str, generated_index: int) -> list[Gate]:
 
     if not primitive_match:
         raise ConversionError(
-            f"Unsupported module statement: {statement[:100]!r}"
+            f"Unsupported primitive statement {statement[:100]!r}"
         )
 
     primitive = primitive_match.group(1).lower()
-    remainder = strip_leading_gate_modifiers(primitive_match.group(2))
+    remainder = primitive_match.group(2).strip()
+
+    if remainder.startswith("#"):
+        raise ConversionError(
+            f"Primitive delay specification is not supported in "
+            f"{statement[:100]!r}"
+        )
+
+    if remainder.startswith("("):
+        # This is ambiguous: it may be an unnamed primitive instance or a
+        # drive-strength declaration. Treat a single parenthesized group
+        # containing at least two comma-separated connections as an unnamed
+        # primitive instance.
+        pass
 
     instance_chunks = split_top_level_commas(remainder)
+
+    # split_top_level_commas() will not split multiple instances correctly
+    # when each instance has its own parentheses because the comma between
+    # instances is top-level. It does handle that intended syntax.
     gates: list[Gate] = []
 
     for chunk_number, chunk in enumerate(instance_chunks, start=1):
@@ -549,7 +675,8 @@ def parse_gate_statement(statement: str, generated_index: int) -> list[Gate]:
 
         if not instance_match:
             raise ConversionError(
-                f"Could not parse {primitive} primitive instance: {chunk!r}"
+                f"Could not parse {primitive} primitive instance "
+                f"{chunk!r}"
             )
 
         instance_name = instance_match.group("name")
@@ -560,56 +687,75 @@ def parse_gate_statement(statement: str, generated_index: int) -> list[Gate]:
             )
 
         connections = [
-            connection.strip()
-            for connection in split_top_level_commas(
+            item.strip()
+            for item in split_top_level_commas(
                 instance_match.group("connections")
             )
         ]
 
-        minimum_terminals = 2 if primitive in {"not", "buf"} else 3
+        minimum_terminal_count = (
+            2 if primitive in {"not", "buf"} else 3
+        )
 
-        if len(connections) < minimum_terminals:
+        if len(connections) < minimum_terminal_count:
             raise ConversionError(
-                f"Primitive {primitive!r}, instance {instance_name!r}, "
-                f"requires at least {minimum_terminals} terminals"
+                f"Primitive {primitive!r}, instance "
+                f"{instance_name!r}, requires at least "
+                f"{minimum_terminal_count} terminals"
             )
 
         for connection in connections:
-            validate_identifier(connection, "primitive connection")
+            validate_identifier(
+                connection,
+                "primitive connection",
+            )
 
-        output = connections[0]
-        inputs = connections[1:]
+        gate_output = connections[0]
+        gate_inputs = connections[1:]
 
-        if primitive in {"not", "buf"} and len(inputs) != 1:
+        if primitive in {"not", "buf"} and len(gate_inputs) != 1:
             raise ConversionError(
-                f"Primitive {primitive!r}, instance {instance_name!r}, "
-                "must have exactly one input"
+                f"Primitive {primitive!r}, instance "
+                f"{instance_name!r}, must have exactly one input"
             )
 
         gates.append(
             Gate(
                 primitive=primitive,
                 instance=instance_name,
-                output=output,
-                inputs=inputs,
+                output=gate_output,
+                inputs=gate_inputs,
             )
         )
 
     return gates
 
 
-def parse_module(
-    module_name: str,
-    port_header: str,
-    body: str,
-) -> Module:
-    """Parse one extracted module."""
+def parse_module(extracted: ExtractedModule) -> Module:
+    """Parse one extracted structural Verilog module."""
 
-    ansi_ports, ansi_inputs, ansi_outputs = parse_ansi_port_header(
-        port_header
-    )
+    module_name = extracted.name
+    port_header = extracted.port_header
+    body = extracted.body
 
-    if ansi_ports:
+    if port_header.startswith("__PARAMETERIZED_MODULE__"):
+        raise ConversionError(
+            "Parameterized module declarations are not supported"
+        )
+
+    if not port_header.strip():
+        raise ConversionError(
+            "Module has no ports and is not a convertible logic cell"
+        )
+
+    (
+        ansi_ports,
+        ansi_inputs,
+        ansi_outputs,
+        is_ansi,
+    ) = parse_ansi_port_header(port_header)
+
+    if is_ansi:
         ports = ansi_ports
         inputs = list(ansi_inputs)
         outputs = list(ansi_outputs)
@@ -623,21 +769,26 @@ def parse_module(
 
     statements = split_statements(body)
 
-    for statement_index, statement in enumerate(statements, start=1):
+    for statement_index, statement in enumerate(
+        statements,
+        start=1,
+    ):
         declaration_match = re.match(
-            r"^(input|output|inout|wire|tri)\b(.*)$",
+            r"^(input|output|inout|wire|tri|wand|wor)\b(.*)$",
             statement,
             flags=re.IGNORECASE | re.DOTALL,
         )
 
         if declaration_match:
-            declaration_type = declaration_match.group(1).lower()
+            declaration_type = (
+                declaration_match.group(1).lower()
+            )
+
             declaration_body = declaration_match.group(2)
 
             if declaration_type == "inout":
                 raise ConversionError(
-                    f"Module {module_name!r} contains an inout port. "
-                    "Only input and output logic ports are supported."
+                    "inout logic ports are not supported"
                 )
 
             names = parse_declared_names(
@@ -661,55 +812,79 @@ def parse_module(
 
         if not first_word_match:
             raise ConversionError(
-                f"Could not identify statement: {statement[:100]!r}"
+                f"Could not identify statement "
+                f"{statement[:100]!r}"
             )
 
         first_word = first_word_match.group(1).lower()
 
         if first_word not in SUPPORTED_PRIMITIVES:
             raise ConversionError(
-                f"Unsupported statement beginning with {first_word!r}: "
-                f"{statement[:100]!r}"
+                f"Unsupported statement beginning with "
+                f"{first_word!r}: {statement[:100]!r}"
             )
 
-        gates.extend(parse_gate_statement(statement, statement_index))
+        gates.extend(
+            parse_gate_statement(
+                statement,
+                statement_index,
+            )
+        )
 
     inputs = unique_preserving_order(inputs)
     outputs = unique_preserving_order(outputs)
     wires = unique_preserving_order(wires)
 
-    if len(outputs) != 1:
+    if not outputs:
         raise ConversionError(
-            f"Module {module_name!r} has {len(outputs)} outputs; "
-            "exactly one output is required"
+            "Module has no output ports"
+        )
+
+    if not inputs:
+        raise ConversionError(
+            "Module has no input ports"
         )
 
     declared_ports = set(inputs) | set(outputs)
 
     missing_port_declarations = [
-        port for port in ports if port not in declared_ports
+        port
+        for port in ports
+        if port not in declared_ports
     ]
 
     if missing_port_declarations:
         raise ConversionError(
-            f"Module {module_name!r} has ports without input/output "
-            f"declarations: {', '.join(missing_port_declarations)}"
+            "Ports without input/output declarations: "
+            + ", ".join(missing_port_declarations)
         )
 
-    undeclared_header_ports = [
-        signal for signal in inputs + outputs if signal not in ports
+    declarations_not_in_header = [
+        signal
+        for signal in inputs + outputs
+        if signal not in ports
     ]
 
-    if undeclared_header_ports:
+    if declarations_not_in_header:
         raise ConversionError(
-            f"Module {module_name!r} has input/output declarations not "
-            f"present in its port header: "
-            f"{', '.join(undeclared_header_ports)}"
+            "Input/output declarations not present in the module "
+            "port header: "
+            + ", ".join(declarations_not_in_header)
+        )
+
+    duplicated_port_directions = (
+        set(inputs) & set(outputs)
+    )
+
+    if duplicated_port_directions:
+        raise ConversionError(
+            "Signals declared as both input and output: "
+            + ", ".join(sorted(duplicated_port_directions))
         )
 
     if not gates:
         raise ConversionError(
-            f"Module {module_name!r} contains no supported primitive gates"
+            "Module contains no supported primitive gates"
         )
 
     return Module(
@@ -724,36 +899,38 @@ def parse_module(
 
 def order_gates(module: Module) -> list[Gate]:
     """
-    Topologically order gates according to signal dependencies.
+    Topologically order the primitive gates.
+
+    Every module input is initially known. A gate becomes evaluable when all
+    its input signals are known. Its output then becomes known.
     """
 
     driver_by_signal: dict[str, Gate] = {}
 
     for gate in module.gates:
         if gate.output in driver_by_signal:
-            other = driver_by_signal[gate.output]
+            previous_gate = driver_by_signal[gate.output]
 
             raise ConversionError(
-                f"Signal {gate.output!r} in module {module.name!r} has "
-                f"multiple drivers: {other.instance!r} and "
+                f"Signal {gate.output!r} has multiple drivers: "
+                f"{previous_gate.instance!r} and "
                 f"{gate.instance!r}"
             )
 
         if gate.output in module.inputs:
             raise ConversionError(
-                f"Gate {gate.instance!r} drives input port "
-                f"{gate.output!r} in module {module.name!r}"
+                f"Primitive {gate.instance!r} drives input port "
+                f"{gate.output!r}"
             )
 
         driver_by_signal[gate.output] = gate
 
-    output_name = module.outputs[0]
-
-    if output_name not in driver_by_signal:
-        raise ConversionError(
-            f"Output {output_name!r} of module {module.name!r} "
-            "is not driven by a supported primitive"
-        )
+    for output_name in module.outputs:
+        if output_name not in driver_by_signal:
+            raise ConversionError(
+                f"Output {output_name!r} is not driven by a "
+                "supported primitive"
+            )
 
     known_signals = set(module.inputs)
     remaining = list(module.gates)
@@ -761,63 +938,65 @@ def order_gates(module: Module) -> list[Gate]:
 
     while remaining:
         made_progress = False
-        next_remaining: list[Gate] = []
+        unresolved: list[Gate] = []
 
         for gate in remaining:
-            unknown_inputs = [
-                signal
-                for signal in gate.inputs
-                if signal not in known_signals
-            ]
-
-            if not unknown_inputs:
+            if all(
+                input_signal in known_signals
+                for input_signal in gate.inputs
+            ):
                 ordered.append(gate)
                 known_signals.add(gate.output)
                 made_progress = True
             else:
-                next_remaining.append(gate)
+                unresolved.append(gate)
 
         if not made_progress:
-            details = []
+            details: list[str] = []
 
-            for gate in next_remaining:
-                unknown = [
+            for gate in unresolved:
+                unavailable_inputs = [
                     signal
                     for signal in gate.inputs
                     if signal not in known_signals
                 ]
 
                 details.append(
-                    f"{gate.instance}: waiting for {', '.join(unknown)}"
+                    f"{gate.instance}: waiting for "
+                    + ", ".join(unavailable_inputs)
                 )
 
             raise ConversionError(
-                f"Could not resolve gate order in module {module.name!r}. "
-                "There may be a combinational loop or an undriven signal.\n"
-                "    " + "\n    ".join(details)
+                "Could not resolve gate evaluation order. "
+                "There may be an undriven signal or combinational loop:\n"
+                "    "
+                + "\n    ".join(details)
             )
 
-        remaining = next_remaining
+        remaining = unresolved
 
     return ordered
 
 
 def va_logic_name(signal_name: str) -> str:
-    """Return the internal integer variable name for a Verilog signal."""
+    """Return the internal Verilog-A integer name for a logic signal."""
 
     return f"logic_{signal_name}"
 
 
 def verilog_a_gate_expression(gate: Gate) -> str:
-    """Generate the integer Boolean expression for a primitive gate."""
+    """Generate a Verilog-A integer Boolean expression."""
 
-    inputs = [va_logic_name(signal) for signal in gate.inputs]
+    input_names = [
+        va_logic_name(signal)
+        for signal in gate.inputs
+    ]
 
     if gate.primitive == "buf":
-        return inputs[0]
+        return input_names[0]
 
     if gate.primitive == "not":
-        return f"!({inputs[0]})"
+        return f"!({input_names[0]})"
 
     operator_by_primitive = {
         "and": "&&",
@@ -829,41 +1008,48 @@ def verilog_a_gate_expression(gate: Gate) -> str:
     }
 
     operator = operator_by_primitive[gate.primitive]
-    joined = f" {operator} ".join(f"({item})" for item in inputs)
+
+    joined_expression = (
+        f" {operator} "
+    ).join(
+        f"({name})"
+        for name in input_names
+    )
 
     if gate.primitive in {"nand", "nor", "xnor"}:
-        return f"!({joined})"
+        return f"!({joined_expression})"
 
-    return joined
+    return joined_expression
 
 
-def wrap_port_list(module_name: str, ports: list[str]) -> list[str]:
-    """Format the Verilog-A module port list."""
-
-    if not ports:
-        return [f"module {module_name} ();"]
+def wrap_module_port_list(
+    module_name: str,
+    ports: list[str],
+) -> list[str]:
+    """Format the generated Verilog-A module port list."""
 
     lines = [f"module {module_name} ("]
 
     for index, port in enumerate(ports):
-        comma = "," if index != len(ports) - 1 else ""
+        comma = "," if index < len(ports) - 1 else ""
         lines.append(f"    {port}{comma}")
 
     lines.append(");")
+
     return lines
 
 
 def generate_verilog_a(module: Module) -> str:
-    """Generate the complete Verilog-A source for one module."""
+    """Generate complete Verilog-A source for one parsed module."""
 
     ordered_gates = order_gates(module)
-    output_name = module.outputs[0]
 
     generated_signals = unique_preserving_order(
-        gate.output for gate in ordered_gates
+        gate.output
+        for gate in ordered_gates
     )
 
-    internal_logic_signals = unique_preserving_order(
+    integer_logic_signals = unique_preserving_order(
         module.inputs + generated_signals
     )
 
@@ -872,52 +1058,75 @@ def generate_verilog_a(module: Module) -> str:
     lines.append("`include \"constants.vams\"")
     lines.append("`include \"disciplines.vams\"")
     lines.append("")
-    lines.extend(wrap_port_list(module.name, module.ports))
+
+    lines.extend(
+        wrap_module_port_list(
+            module.name,
+            module.ports,
+        )
+    )
+
+    lines.append("")
+    lines.append(
+        f"    input  {', '.join(module.inputs)};"
+    )
+    lines.append(
+        f"    output {', '.join(module.outputs)};"
+    )
+    lines.append("")
+    lines.append(
+        f"    electrical {', '.join(module.ports)};"
+    )
     lines.append("")
 
-    lines.append(f"    input  {', '.join(module.inputs)};")
-    lines.append(f"    output {output_name};")
-    lines.append("")
-
-    lines.append(f"    electrical {', '.join(module.ports)};")
-    lines.append("")
-
-    lines.append("    parameter real vlogic_high = 1.8;")
-    lines.append("    parameter real vlogic_low  = 0.0;")
+    lines.append(
+        "    parameter real vlogic_high = 1.8;"
+    )
+    lines.append(
+        "    parameter real vlogic_low  = 0.0;"
+    )
     lines.append(
         "    parameter real vtrans      = "
         "(vlogic_high + vlogic_low) / 2.0;"
     )
     lines.append("")
-    lines.append("    parameter real tdel  = 1n from [0:inf);")
-    lines.append("    parameter real trise = 1n from (0:inf);")
-    lines.append("    parameter real tfall = 1n from (0:inf);")
+    lines.append(
+        "    parameter real tdel  = 1n from [0:inf);"
+    )
+    lines.append(
+        "    parameter real trise = 1n from (0:inf);"
+    )
+    lines.append(
+        "    parameter real tfall = 1n from (0:inf);"
+    )
     lines.append("")
-    lines.append("    parameter real ttol     = 10p from (0:inf);")
-    lines.append("    parameter real expr_tol = 10m from (0:inf);")
+    lines.append(
+        "    parameter real ttol     = 10p from (0:inf);"
+    )
+    lines.append(
+        "    parameter real expr_tol = 10m from (0:inf);"
+    )
     lines.append("")
 
-    for signal in internal_logic_signals:
-        lines.append(f"    integer {va_logic_name(signal)};")
+    for signal in integer_logic_signals:
+        lines.append(
+            f"    integer {va_logic_name(signal)};"
+        )
 
     lines.append("")
     lines.append("    analog begin")
-
-    event_terms = ["initial_step"]
+    lines.append("        @(")
+    lines.append("            initial_step")
 
     for input_name in module.inputs:
-        event_terms.append(
-            f"cross(V({input_name}) - vtrans, +1, ttol, expr_tol)"
+        lines.append(
+            f"         or cross(V({input_name}) - vtrans, "
+            "+1, ttol, expr_tol)"
         )
-        event_terms.append(
-            f"cross(V({input_name}) - vtrans, -1, ttol, expr_tol)"
+        lines.append(
+            f"         or cross(V({input_name}) - vtrans, "
+            "-1, ttol, expr_tol)"
         )
-
-    lines.append("        @(")
-
-    for index, event_term in enumerate(event_terms):
-        prefix = "            " if index == 0 else "         or "
-        lines.append(f"{prefix}{event_term}")
 
     lines.append("        ) begin")
 
@@ -931,22 +1140,32 @@ def generate_verilog_a(module: Module) -> str:
 
     for gate in ordered_gates:
         expression = verilog_a_gate_expression(gate)
+
         lines.append(
-            f"            {va_logic_name(gate.output)} = {expression};"
+            f"            {va_logic_name(gate.output)} = "
+            f"{expression};"
             f"  // {gate.primitive} {gate.instance}"
         )
 
     lines.append("        end")
     lines.append("")
-    lines.append(
-        f"        V({output_name}) <+ transition("
-    )
-    lines.append(
-        f"            {va_logic_name(output_name)} "
-        "? vlogic_high : vlogic_low,"
-    )
-    lines.append("            tdel, trise, tfall")
-    lines.append("        );")
+
+    for output_index, output_name in enumerate(module.outputs):
+        lines.append(
+            f"        V({output_name}) <+ transition("
+        )
+        lines.append(
+            f"            {va_logic_name(output_name)} "
+            "? vlogic_high : vlogic_low,"
+        )
+        lines.append(
+            "            tdel, trise, tfall"
+        )
+        lines.append("        );")
+
+        if output_index < len(module.outputs) - 1:
+            lines.append("")
+
     lines.append("    end")
     lines.append("")
     lines.append("endmodule")
@@ -955,92 +1174,120 @@ def generate_verilog_a(module: Module) -> str:
     return "\n".join(lines)
 
 
-def parse_verilog_file(
-    path: Path,
-    requested_cell: str | None = None,
-) -> tuple[list[Module], list[tuple[str, str]]]:
-    """
-    Read and parse modules from a Verilog file.
-
-    When requested_cell is supplied, only that module is parsed. Unsupported
-    or malformed unrelated modules do not prevent its generation.
-
-    When requested_cell is omitted, all modules are attempted. Modules that
-    cannot be converted are skipped and returned in the warning list.
-
-    Returns:
-
-        (
-            successfully_parsed_modules,
-            [(skipped_module_name, reason), ...],
-        )
-    """
+def read_verilog_source(path: Path) -> str:
+    """Read a Verilog file with a reasonable encoding fallback."""
 
     try:
-        source = path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        source = path.read_text(encoding="latin-1")
+        try:
+            return path.read_text(encoding="latin-1")
+        except OSError as error:
+            raise ConversionError(
+                f"Could not read {path}: {error}"
+            ) from error
     except OSError as error:
-        raise ConversionError(f"Could not read {path}: {error}") from error
+        raise ConversionError(
+            f"Could not read {path}: {error}"
+        ) from error
 
+
+def load_extracted_modules(path: Path) -> list[ExtractedModule]:
+    """Read, clean, and extract all modules from the input file."""
+
+    source = read_verilog_source(path)
     source = remove_comments(source)
     source = remove_specify_blocks(source)
 
-    extracted = extract_modules(source)
+    extracted_modules = extract_modules(source)
 
-    if not extracted:
-        raise ConversionError(f"No module definitions found in {path}")
+    if not extracted_modules:
+        raise ConversionError(
+            f"No module definitions found in {path}"
+        )
+
+    return extracted_modules
+
+
+def parse_selected_modules(
+    path: Path,
+    requested_cell: str | None,
+) -> tuple[list[Module], list[tuple[str, str]]]:
+    """
+    Parse either one requested module or all convertible modules.
+
+    Returns:
+
+        parsed_modules,
+        [(skipped_module_name, reason), ...]
+    """
+
+    extracted_modules = load_extracted_modules(path)
 
     if requested_cell is not None:
-        selected = find_extracted_module(extracted, requested_cell)
+        selected = find_extracted_module(
+            extracted_modules,
+            requested_cell,
+        )
 
         if selected is None:
-            available = ", ".join(
-                module_name
-                for module_name, _, _ in extracted
+            available_names = ", ".join(
+                module.name
+                for module in extracted_modules
             )
 
             raise ConversionError(
                 f"Module {requested_cell!r} was not found in {path}.\n"
-                f"Available modules: {available}"
+                f"Available modules: {available_names}"
             )
 
-        module_name, port_header, body = selected
-
         try:
-            module = parse_module(module_name, port_header, body)
+            parsed = parse_module(selected)
         except ConversionError as error:
             raise ConversionError(
-                f"While parsing requested module {module_name!r}: {error}"
+                f"While parsing requested module "
+                f"{requested_cell!r}: {error}"
             ) from error
 
-        return [module], []
+        return [parsed], []
 
     parsed_modules: list[Module] = []
     skipped_modules: list[tuple[str, str]] = []
 
-    for module_name, port_header, body in extracted:
+    for extracted in extracted_modules:
         try:
-            module = parse_module(module_name, port_header, body)
+            parsed_modules.append(
+                parse_module(extracted)
+            )
         except ConversionError as error:
-            skipped_modules.append((module_name, str(error)))
-            continue
-
-        parsed_modules.append(module)
+            skipped_modules.append(
+                (extracted.name, str(error))
+            )
 
     return parsed_modules, skipped_modules
 
+
 def write_output(module: Module) -> Path:
-    """Generate and write one Verilog-A output file."""
+    """
+    Generate and atomically write one <module>.va output file.
+    """
 
     output_path = Path.cwd() / f"{module.name}.va"
-    temporary_path = output_path.with_suffix(".va.tmp")
+
+    temporary_path = Path.cwd() / (
+        f".{module.name}.va.tmp"
+    )
 
     content = generate_verilog_a(module)
 
     try:
-        temporary_path.write_text(content, encoding="utf-8")
+        temporary_path.write_text(
+            content,
+            encoding="utf-8",
+        )
+
         temporary_path.replace(output_path)
+
     except OSError as error:
         try:
             temporary_path.unlink(missing_ok=True)
@@ -1055,25 +1302,30 @@ def write_output(module: Module) -> Path:
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
+    """Construct the command-line parser."""
+
     parser = argparse.ArgumentParser(
         description=(
             "Generate electrical Verilog-A models from structural "
-            "gate-level Verilog modules."
+            "combinational gate-level Verilog modules."
         )
     )
 
     parser.add_argument(
         "verilog_file",
         type=Path,
-        help="Input Verilog file containing structural module definitions",
+        help=(
+            "Input Verilog file containing structural module "
+            "definitions"
+        ),
     )
 
     parser.add_argument(
         "cellname",
         nargs="?",
         help=(
-            "Optional module name to convert. If omitted, all convertible "
-            "modules are generated."
+            "Optional module name to generate. If omitted, all "
+            "convertible modules are generated."
         ),
     )
 
@@ -1081,34 +1333,41 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """Program entry point."""
+
     parser = build_argument_parser()
     args = parser.parse_args()
 
     if not args.verilog_file.is_file():
         print(
-            f"ERROR: Input file does not exist or is not a regular file: "
-            f"{args.verilog_file}",
+            "ERROR: Input file does not exist or is not a regular "
+            f"file: {args.verilog_file}",
             file=sys.stderr,
         )
         return 1
 
     try:
-        modules_to_generate, skipped_modules = parse_verilog_file(
-            args.verilog_file,
-            requested_cell=args.cellname,
+        modules_to_generate, skipped_modules = (
+            parse_selected_modules(
+                args.verilog_file,
+                args.cellname,
+            )
         )
     except ConversionError as error:
-        print(f"ERROR: {error}", file=sys.stderr)
+        print(
+            f"ERROR: {error}",
+            file=sys.stderr,
+        )
         return 1
 
     generated_count = 0
-    failed_count = 0
+    generation_failures = 0
 
     for module in modules_to_generate:
         try:
             output_path = write_output(module)
         except ConversionError as error:
-            failed_count += 1
+            generation_failures += 1
 
             print(
                 f"ERROR: Could not generate module "
@@ -1119,11 +1378,21 @@ def main() -> int:
             continue
 
         generated_count += 1
-        print(f"Generated: {output_path}")
+
+        output_word = (
+            "output"
+            if len(module.outputs) == 1
+            else "outputs"
+        )
+
+        print(
+            f"Generated: {output_path} "
+            f"({len(module.outputs)} {output_word})"
+        )
 
     if skipped_modules:
         print(
-            "\nSkipped modules that are not convertible:",
+            "\nSkipped modules:",
             file=sys.stderr,
         )
 
@@ -1136,16 +1405,13 @@ def main() -> int:
     print(
         f"\nGenerated {generated_count} module(s); "
         f"skipped {len(skipped_modules)} module(s); "
-        f"generation failures {failed_count}."
+        f"generation failures {generation_failures}."
     )
 
     if args.cellname is not None:
         return 0 if generated_count == 1 else 1
 
-    # In all-cells mode, skipped unsupported cells are warnings rather than
-    # a fatal error. Return failure only if no models could be generated or
-    # an actual output-file generation failed.
-    if failed_count:
+    if generation_failures:
         return 1
 
     if generated_count == 0:
@@ -1156,6 +1422,7 @@ def main() -> int:
         return 1
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
