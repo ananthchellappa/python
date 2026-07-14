@@ -8,11 +8,20 @@ Usage:
     python3 generate_veriloga_from_verilog.py /path/to/cells.v
     python3 generate_veriloga_from_verilog.py /path/to/cells.v cellname
 
-With no cellname, the script attempts to generate one <module_name>.va file
-in the current directory for every convertible module in the input file.
+Optional added ports:
 
-When a cellname is supplied, only that module is parsed and generated.
-Unsupported or unusual unrelated modules do not prevent its generation.
+    python3 generate_veriloga_from_verilog.py \
+        /path/to/cells.v \
+        --addports 'VDD,VDDS,VSS,SUBS'
+
+    python3 generate_veriloga_from_verilog.py \
+        /path/to/cells.v \
+        cellname \
+        --addports 'VDD:input,VDDS:input,VSS,SUBS'
+
+Added ports default to inout. Explicit directions may be input, output, or
+inout. Added ports are electrical interface ports only; they are not decoded
+as Boolean logic inputs and do not create cross() events.
 
 Supported Verilog primitives:
 
@@ -24,29 +33,6 @@ Supported Verilog primitives:
     xnor
     not
     buf
-
-Supported module declaration styles:
-
-    module cell (X, A, B);
-        output X;
-        input A, B;
-        ...
-    endmodule
-
-    module cell (
-        output X,
-        input A,
-        input B
-    );
-        ...
-    endmodule
-
-Portless modules are recognized and skipped:
-
-    module filler;
-        specify
-        endspecify
-    endmodule
 
 Assumptions and limitations:
 
@@ -100,6 +86,12 @@ class Gate:
     inputs: list[str]
 
 
+@dataclass(frozen=True)
+class AddedPort:
+    name: str
+    direction: str
+
+
 @dataclass
 class ExtractedModule:
     name: str
@@ -118,26 +110,10 @@ class Module:
 
 
 def remove_comments(text: str) -> str:
-    """
-    Remove Verilog // and /* ... */ comments.
+    """Remove Verilog // and /* ... */ comments."""
 
-    String literals are not specially handled because ordinary structural
-    cell-library modules generally do not contain relevant string literals.
-    """
-
-    text = re.sub(
-        r"/\*.*?\*/",
-        "",
-        text,
-        flags=re.DOTALL,
-    )
-
-    text = re.sub(
-        r"//[^\n]*",
-        "",
-        text,
-    )
-
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = re.sub(r"//[^\n]*", "", text)
     return text
 
 
@@ -158,9 +134,7 @@ def find_matching_delimiter(
     opening_char: str,
     closing_char: str,
 ) -> int:
-    """
-    Return the index of the closing delimiter matching an opening delimiter.
-    """
+    """Return the matching closing-delimiter index."""
 
     if opening_index >= len(text) or text[opening_index] != opening_char:
         raise ValueError(
@@ -180,20 +154,13 @@ def find_matching_delimiter(
             if depth == 0:
                 return index
 
-    raise ConversionError(
-        f"Unmatched {opening_char!r} delimiter"
-    )
+    raise ConversionError(f"Unmatched {opening_char!r} delimiter")
 
 
 def find_matching_parenthesis(text: str, opening_index: int) -> int:
     """Return the ')' matching text[opening_index] == '('."""
 
-    return find_matching_delimiter(
-        text,
-        opening_index,
-        "(",
-        ")",
-    )
+    return find_matching_delimiter(text, opening_index, "(", ")")
 
 
 def skip_whitespace(text: str, index: int) -> int:
@@ -206,9 +173,7 @@ def skip_whitespace(text: str, index: int) -> int:
 
 
 def split_top_level_commas(text: str) -> list[str]:
-    """
-    Split text at commas not enclosed in parentheses, brackets, or braces.
-    """
+    """Split at commas outside parentheses, brackets, and braces."""
 
     result: list[str] = []
     start = 0
@@ -252,11 +217,7 @@ def split_top_level_commas(text: str) -> list[str]:
 
 
 def split_statements(body: str) -> list[str]:
-    """
-    Split a module body into semicolon-terminated statements.
-
-    Semicolons enclosed in parentheses, brackets, or braces are ignored.
-    """
+    """Split a module body into semicolon-terminated statements."""
 
     statements: list[str] = []
     start = 0
@@ -303,7 +264,7 @@ def split_statements(body: str) -> list[str]:
 
 
 def unique_preserving_order(items: Iterable[str]) -> list[str]:
-    """Remove duplicates while preserving the original order."""
+    """Remove duplicates while preserving order."""
 
     seen: set[str] = set()
     result: list[str] = []
@@ -317,12 +278,7 @@ def unique_preserving_order(items: Iterable[str]) -> list[str]:
 
 
 def validate_identifier(identifier: str, context: str) -> None:
-    """
-    Validate a simple scalar Verilog identifier.
-
-    This deliberately rejects escaped identifiers, bit selections,
-    concatenations, constants, and expressions.
-    """
+    """Validate a simple scalar Verilog identifier."""
 
     if not IDENTIFIER_RE.fullmatch(identifier):
         raise ConversionError(
@@ -331,32 +287,81 @@ def validate_identifier(identifier: str, context: str) -> None:
         )
 
 
-def find_endmodule(
-    source: str,
-    search_start: int,
-) -> re.Match[str] | None:
-    """Find the next endmodule keyword."""
+def parse_addports_spec(spec: str | None) -> list[AddedPort]:
+    """
+    Parse --addports.
 
-    return re.search(
-        r"\bendmodule\b",
-        source[search_start:],
-        flags=re.IGNORECASE,
-    )
+    Examples:
+
+        VDD,VDDS,VSS,SUBS
+        VDD:input,VDDS:input,VSS,SUBS
+    """
+
+    if spec is None:
+        return []
+
+    spec = spec.strip()
+
+    if not spec:
+        raise ConversionError(
+            "--addports was supplied with an empty port list"
+        )
+
+    added_ports: list[AddedPort] = []
+    seen_names: set[str] = set()
+
+    for raw_item in spec.split(","):
+        item = raw_item.strip()
+
+        if not item:
+            raise ConversionError(
+                "Empty item in --addports specification"
+            )
+
+        if ":" in item:
+            parts = item.split(":")
+
+            if len(parts) != 2:
+                raise ConversionError(
+                    f"Invalid --addports item {item!r}. "
+                    "Expected PORT or PORT:DIRECTION."
+                )
+
+            port_name = parts[0].strip()
+            direction = parts[1].strip().lower()
+        else:
+            port_name = item
+            direction = "inout"
+
+        validate_identifier(port_name, "--addports port name")
+
+        if direction not in {"input", "output", "inout"}:
+            raise ConversionError(
+                f"Invalid direction {direction!r} for added port "
+                f"{port_name!r}. Expected input, output, or inout."
+            )
+
+        if port_name in seen_names:
+            raise ConversionError(
+                f"Port {port_name!r} appears more than once in --addports"
+            )
+
+        seen_names.add(port_name)
+        added_ports.append(
+            AddedPort(name=port_name, direction=direction)
+        )
+
+    return added_ports
 
 
 def extract_modules(source: str) -> list[ExtractedModule]:
     """
-    Extract modules without attempting to validate their contents.
+    Extract modules without validating their contents.
 
-    This function recognizes:
+    Recognizes both:
 
         module name (...);
         module name;
-
-    Parameterized module headers are tolerated during extraction so an
-    unrelated parameterized module does not prevent extraction of later
-    requested modules. Such modules are rejected only if conversion is
-    attempted.
     """
 
     modules: list[ExtractedModule] = []
@@ -367,7 +372,7 @@ def extract_modules(source: str) -> list[ExtractedModule]:
         flags=re.IGNORECASE,
     )
 
-    endmodule_word_re = re.compile(
+    endmodule_re = re.compile(
         r"\bendmodule\b",
         flags=re.IGNORECASE,
     )
@@ -404,7 +409,7 @@ def extract_modules(source: str) -> list[ExtractedModule]:
 
         if index < len(source) and source[index] == "(":
             port_end = find_matching_parenthesis(source, index)
-            port_header = source[index + 1 : port_end]
+            port_header = source[index + 1:port_end]
             semicolon_index = skip_whitespace(source, port_end + 1)
 
             if (
@@ -421,9 +426,6 @@ def extract_modules(source: str) -> list[ExtractedModule]:
             semicolon_index = index
 
         else:
-            # Try to recover by locating the declaration semicolon. This
-            # permits later modules to remain visible even if this module
-            # has an unsupported header form.
             semicolon_index = source.find(";", index)
 
             if semicolon_index < 0:
@@ -434,7 +436,7 @@ def extract_modules(source: str) -> list[ExtractedModule]:
 
             port_header = ""
 
-        end_match = endmodule_word_re.search(
+        end_match = endmodule_re.search(
             source,
             semicolon_index + 1,
         )
@@ -445,12 +447,10 @@ def extract_modules(source: str) -> list[ExtractedModule]:
             )
 
         body = source[
-            semicolon_index + 1 : end_match.start()
+            semicolon_index + 1:end_match.start()
         ]
 
         if parameterized:
-            # Mark the extracted header so parse_module can produce a clear
-            # error only when conversion of this module is attempted.
             port_header = "__PARAMETERIZED_MODULE__" + port_header
 
         modules.append(
@@ -483,16 +483,7 @@ def parse_declared_names(
     declaration: str,
     declaration_type: str,
 ) -> list[str]:
-    """
-    Parse names from an input, output, wire, or tri declaration.
-
-    Examples:
-
-        input A, B
-        output wire X
-        output reg X
-        wire n1, n2
-    """
+    """Parse names from an input/output/wire declaration."""
 
     declaration = declaration.strip()
 
@@ -538,18 +529,7 @@ def parse_declared_names(
 def parse_ansi_port_header(
     port_header: str,
 ) -> tuple[list[str], list[str], list[str], bool]:
-    """
-    Attempt to parse an ANSI-style port header.
-
-    Returns:
-
-        ports, inputs, outputs, is_ansi
-
-    Examples:
-
-        input A, input B, output X
-        input A, B, output X, Y
-    """
+    """Attempt to parse an ANSI-style port header."""
 
     items = split_top_level_commas(port_header)
 
@@ -580,7 +560,7 @@ def parse_ansi_port_header(
 
         if current_direction == "inout":
             raise ConversionError(
-                "inout logic ports are not supported"
+                "inout logic ports are not supported in the source module"
             )
 
         names = parse_declared_names(
@@ -600,9 +580,7 @@ def parse_ansi_port_header(
 
 
 def parse_non_ansi_port_header(port_header: str) -> list[str]:
-    """
-    Parse a traditional module port header containing only port names.
-    """
+    """Parse a traditional module port header."""
 
     ports: list[str] = []
 
@@ -618,16 +596,7 @@ def parse_gate_statement(
     statement: str,
     generated_index: int,
 ) -> list[Gate]:
-    """
-    Parse one structural primitive statement.
-
-    Examples:
-
-        and g1 (n1, A, B)
-        not g2 (X, n1)
-        and g1(n1,A,B), g2(X,n1,C)
-        xor (X, A, B)
-    """
+    """Parse one structural primitive statement."""
 
     primitive_match = re.match(
         r"^(and|nand|or|nor|xor|xnor|not|buf)\b(.*)$",
@@ -649,18 +618,7 @@ def parse_gate_statement(
             f"{statement[:100]!r}"
         )
 
-    if remainder.startswith("("):
-        # This is ambiguous: it may be an unnamed primitive instance or a
-        # drive-strength declaration. Treat a single parenthesized group
-        # containing at least two comma-separated connections as an unnamed
-        # primitive instance.
-        pass
-
     instance_chunks = split_top_level_commas(remainder)
-
-    # split_top_level_commas() will not split multiple instances correctly
-    # when each instance has its own parentheses because the comma between
-    # instances is top-level. It does handle that intended syntax.
     gates: list[Gate] = []
 
     for chunk_number, chunk in enumerate(instance_chunks, start=1):
@@ -780,15 +738,12 @@ def parse_module(extracted: ExtractedModule) -> Module:
         )
 
         if declaration_match:
-            declaration_type = (
-                declaration_match.group(1).lower()
-            )
-
+            declaration_type = declaration_match.group(1).lower()
             declaration_body = declaration_match.group(2)
 
             if declaration_type == "inout":
                 raise ConversionError(
-                    "inout logic ports are not supported"
+                    "inout logic ports are not supported in the source module"
                 )
 
             names = parse_declared_names(
@@ -836,14 +791,10 @@ def parse_module(extracted: ExtractedModule) -> Module:
     wires = unique_preserving_order(wires)
 
     if not outputs:
-        raise ConversionError(
-            "Module has no output ports"
-        )
+        raise ConversionError("Module has no output ports")
 
     if not inputs:
-        raise ConversionError(
-            "Module has no input ports"
-        )
+        raise ConversionError("Module has no input ports")
 
     declared_ports = set(inputs) | set(outputs)
 
@@ -872,9 +823,7 @@ def parse_module(extracted: ExtractedModule) -> Module:
             + ", ".join(declarations_not_in_header)
         )
 
-    duplicated_port_directions = (
-        set(inputs) & set(outputs)
-    )
+    duplicated_port_directions = set(inputs) & set(outputs)
 
     if duplicated_port_directions:
         raise ConversionError(
@@ -898,12 +847,7 @@ def parse_module(extracted: ExtractedModule) -> Module:
 
 
 def order_gates(module: Module) -> list[Gate]:
-    """
-    Topologically order the primitive gates.
-
-    Every module input is initially known. A gate becomes evaluable when all
-    its input signals are known. Its output then becomes known.
-    """
+    """Topologically order primitive gates."""
 
     driver_by_signal: dict[str, Gate] = {}
 
@@ -979,7 +923,7 @@ def order_gates(module: Module) -> list[Gate]:
 
 
 def va_logic_name(signal_name: str) -> str:
-    """Return the internal Verilog-A integer name for a logic signal."""
+    """Return the internal Verilog-A integer name."""
 
     return f"logic_{signal_name}"
 
@@ -1035,12 +979,37 @@ def wrap_module_port_list(
         lines.append(f"    {port}{comma}")
 
     lines.append(");")
-
     return lines
 
 
-def generate_verilog_a(module: Module) -> str:
+def get_effective_added_ports(
+    module: Module,
+    requested_added_ports: list[AddedPort],
+) -> tuple[list[AddedPort], list[str]]:
+    """Remove added ports already present in the source module."""
+
+    existing_ports = set(module.ports)
+
+    effective: list[AddedPort] = []
+    already_present: list[str] = []
+
+    for added_port in requested_added_ports:
+        if added_port.name in existing_ports:
+            already_present.append(added_port.name)
+        else:
+            effective.append(added_port)
+
+    return effective, already_present
+
+
+def generate_verilog_a(
+    module: Module,
+    added_ports: list[AddedPort] | None = None,
+) -> str:
     """Generate complete Verilog-A source for one parsed module."""
+
+    if added_ports is None:
+        added_ports = []
 
     ordered_gates = order_gates(module)
 
@@ -1053,29 +1022,74 @@ def generate_verilog_a(module: Module) -> str:
         module.inputs + generated_signals
     )
 
+    added_port_names = [
+        port.name
+        for port in added_ports
+    ]
+
+    all_ports = module.ports + added_port_names
+
+    added_inputs = [
+        port.name
+        for port in added_ports
+        if port.direction == "input"
+    ]
+
+    added_outputs = [
+        port.name
+        for port in added_ports
+        if port.direction == "output"
+    ]
+
+    added_inouts = [
+        port.name
+        for port in added_ports
+        if port.direction == "inout"
+    ]
+
     lines: list[str] = []
 
-    lines.append("`include \"constants.vams\"")
-    lines.append("`include \"disciplines.vams\"")
+    lines.append('`include "constants.vams"')
+    lines.append('`include "disciplines.vams"')
     lines.append("")
 
     lines.extend(
         wrap_module_port_list(
             module.name,
-            module.ports,
+            all_ports,
         )
     )
 
     lines.append("")
-    lines.append(
-        f"    input  {', '.join(module.inputs)};"
-    )
-    lines.append(
-        f"    output {', '.join(module.outputs)};"
-    )
+
+    if module.inputs:
+        lines.append(
+            f"    input  {', '.join(module.inputs)};"
+        )
+
+    if module.outputs:
+        lines.append(
+            f"    output {', '.join(module.outputs)};"
+        )
+
+    if added_inputs:
+        lines.append(
+            f"    input  {', '.join(added_inputs)};"
+        )
+
+    if added_outputs:
+        lines.append(
+            f"    output {', '.join(added_outputs)};"
+        )
+
+    if added_inouts:
+        lines.append(
+            f"    inout  {', '.join(added_inouts)};"
+        )
+
     lines.append("")
     lines.append(
-        f"    electrical {', '.join(module.ports)};"
+        f"    electrical {', '.join(all_ports)};"
     )
     lines.append("")
 
@@ -1175,7 +1189,7 @@ def generate_verilog_a(module: Module) -> str:
 
 
 def read_verilog_source(path: Path) -> str:
-    """Read a Verilog file with a reasonable encoding fallback."""
+    """Read a Verilog file with an encoding fallback."""
 
     try:
         return path.read_text(encoding="utf-8")
@@ -1193,7 +1207,7 @@ def read_verilog_source(path: Path) -> str:
 
 
 def load_extracted_modules(path: Path) -> list[ExtractedModule]:
-    """Read, clean, and extract all modules from the input file."""
+    """Read, clean, and extract all modules."""
 
     source = read_verilog_source(path)
     source = remove_comments(source)
@@ -1213,14 +1227,7 @@ def parse_selected_modules(
     path: Path,
     requested_cell: str | None,
 ) -> tuple[list[Module], list[tuple[str, str]]]:
-    """
-    Parse either one requested module or all convertible modules.
-
-    Returns:
-
-        parsed_modules,
-        [(skipped_module_name, reason), ...]
-    """
+    """Parse one requested module or all convertible modules."""
 
     extracted_modules = load_extracted_modules(path)
 
@@ -1267,18 +1274,19 @@ def parse_selected_modules(
     return parsed_modules, skipped_modules
 
 
-def write_output(module: Module) -> Path:
-    """
-    Generate and atomically write one <module>.va output file.
-    """
+def write_output(
+    module: Module,
+    added_ports: list[AddedPort] | None = None,
+) -> Path:
+    """Generate and atomically write one <module>.va file."""
 
     output_path = Path.cwd() / f"{module.name}.va"
+    temporary_path = Path.cwd() / f".{module.name}.va.tmp"
 
-    temporary_path = Path.cwd() / (
-        f".{module.name}.va.tmp"
+    content = generate_verilog_a(
+        module,
+        added_ports=added_ports,
     )
-
-    content = generate_verilog_a(module)
 
     try:
         temporary_path.write_text(
@@ -1329,6 +1337,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--addports",
+        metavar="PORTS",
+        help=(
+            "Add electrical ports to every generated Verilog-A module. "
+            "Syntax: 'VDD,VDDS,VSS,SUBS'. Added ports default to inout. "
+            "Use PORT:input, PORT:output, or PORT:inout to specify a "
+            "direction, for example "
+            "'VDD:input,VDDS:input,VSS,SUBS'."
+        ),
+    )
+
     return parser
 
 
@@ -1347,12 +1367,17 @@ def main() -> int:
         return 1
 
     try:
+        requested_added_ports = parse_addports_spec(
+            args.addports
+        )
+
         modules_to_generate, skipped_modules = (
             parse_selected_modules(
                 args.verilog_file,
                 args.cellname,
             )
         )
+
     except ConversionError as error:
         print(
             f"ERROR: {error}",
@@ -1364,8 +1389,27 @@ def main() -> int:
     generation_failures = 0
 
     for module in modules_to_generate:
+        effective_added_ports, already_present = (
+            get_effective_added_ports(
+                module,
+                requested_added_ports,
+            )
+        )
+
+        if already_present:
+            print(
+                f"WARNING: {module.name}: not adding ports already "
+                f"present in the Verilog module: "
+                f"{', '.join(already_present)}",
+                file=sys.stderr,
+            )
+
         try:
-            output_path = write_output(module)
+            output_path = write_output(
+                module,
+                added_ports=effective_added_ports,
+            )
+
         except ConversionError as error:
             generation_failures += 1
 
@@ -1385,10 +1429,25 @@ def main() -> int:
             else "outputs"
         )
 
-        print(
+        summary = (
             f"Generated: {output_path} "
-            f"({len(module.outputs)} {output_word})"
+            f"({len(module.outputs)} {output_word}"
         )
+
+        if effective_added_ports:
+            added_port_word = (
+                "port"
+                if len(effective_added_ports) == 1
+                else "ports"
+            )
+
+            summary += (
+                f", {len(effective_added_ports)} added "
+                f"{added_port_word}"
+            )
+
+        summary += ")"
+        print(summary)
 
     if skipped_modules:
         print(
